@@ -1598,7 +1598,7 @@ async def random_anime_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await progress_msg.delete()
 
         # ✅ Bitta xabar: "✅ Tayyor!" + tugmalar
-        final_text = "✅ Tayyor!"
+        final_text = lang.get("done", "✅ Done!")
         kb = [
             [InlineKeyboardButton("🔄 Yangilash", callback_data="random_anime_refresh")],
             [InlineKeyboardButton(lang["back_to_main_button"], callback_data="back_to_main")]
@@ -1659,16 +1659,12 @@ async def fake_lab_new_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         with open(temp_path, "wb") as f:
             f.write(image_data)
 
-        # Chiroyli caption
-        caption = (
-            "👤 **Bu odam HAQIQIY EMAS!**\n"
-            "🤖 U sun'iy intellekt (AI) tomonidan yaratilgan.\n\n"
-            "🔄 **Yangilash** tugmasi orqali yangi rasm olishingiz mumkin."
-        )
+        # Caption + tugmalar (lug'atdan)
+        caption = lang["fake_lab_ready_caption"]
 
         kb = [
-            [InlineKeyboardButton("Yangilash", callback_data="fake_lab_refresh")],
-            [InlineKeyboardButton("Orqaga", callback_data="back_to_main")]
+            [InlineKeyboardButton(lang.get("stats_refresh_button", "🔄 Refresh"), callback_data="fake_lab_refresh")],
+            [InlineKeyboardButton(lang["back_to_main_button"], callback_data="back_to_main")]
         ]
 
         with open(temp_path, "rb") as photo:
@@ -1690,14 +1686,17 @@ async def fake_lab_refresh_handler(update: Update, context: ContextTypes.DEFAULT
     q = update.callback_query
     await q.answer()
 
-    # Til sozlamasini olish
-    lang = context.user_data.get("lang", {
-        "fake_lab_refreshing": "🔄 Qayta ishlanmoqda... Iltimos kuting."
-    })
+    # Tilni olish (DB)
+    user_id = q.from_user.id
+    lang_code = DEFAULT_LANGUAGE
+    async with context.application.bot_data["db_pool"].acquire() as conn:
+        row = await conn.fetchrow("SELECT language_code FROM users WHERE id = $1", user_id)
+        if row:
+            lang_code = row["language_code"]
+    lang = get_lang(lang_code)
 
     # Progress
     await q.edit_message_caption(caption=lang["fake_lab_refreshing"], parse_mode="Markdown")
-
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -1712,16 +1711,12 @@ async def fake_lab_refresh_handler(update: Update, context: ContextTypes.DEFAULT
         with open(temp_path, "wb") as f:
             f.write(image_data)
 
-        # ✅ To‘g‘ri indentation — bu kod try ichida
-        caption = (
-            "👤 **Bu odam HAQIQIY EMAS!**\n"
-            "🤖 U sun'iy intellekt (AI) tomonidan yaratilgan.\n\n"
-            "🔄 **Yangilash** tugmasi orqali yangi rasm olishingiz mumkin."
-        )
+        # Caption + tugmalar (lug'atdan)
+        caption = lang["fake_lab_ready_caption"]
 
         kb = [
-            [InlineKeyboardButton("🔄 Yangilash", callback_data="fake_lab_refresh")],
-            [InlineKeyboardButton("⬅️ Orqaga", callback_data="back_to_main")]
+            [InlineKeyboardButton(lang.get("stats_refresh_button", "🔄 Refresh"), callback_data="fake_lab_refresh")],
+            [InlineKeyboardButton(lang["back_to_main_button"], callback_data="back_to_main")]
         ]
 
         with open(temp_path, "rb") as photo:
@@ -1735,7 +1730,7 @@ async def fake_lab_refresh_handler(update: Update, context: ContextTypes.DEFAULT
     except Exception as e:
         logger.exception(f"[FAKE LAB REFRESH ERROR] {e}")
         await q.edit_message_caption(
-            caption="⚠️ **Xatolik yuz berdi.**\nQayta urinib ko'ring.",
+            caption=lang["fake_lab_error"],
             parse_mode="Markdown"
         )
 
@@ -2187,25 +2182,30 @@ async def notify_admin_generation(context: ContextTypes.DEFAULT_TYPE, user, prom
         return  # Agar ADMIN_ID o'rnatilmagan bo'lsa, hech narsa yuborilmaydi
 
     try:
-        # Foydalanuvchi tilini olish
+        # Admin tilini olish
         lang_code = DEFAULT_LANGUAGE
         async with context.application.bot_data["db_pool"].acquire() as conn:
             row = await conn.fetchrow("SELECT language_code FROM users WHERE id = $1", ADMIN_ID)
             if row:
-                lang_code = row["language_code"]
+                lang_code = row["language_code"] or DEFAULT_LANGUAGE
         lang = get_lang(lang_code)
 
         tashkent_dt = tashkent_time()
 
-        # Admin uchun xabar matni
+        def _clean(s: str) -> str:
+            # Ba'zi kalitlarda \(UTC\+5\) kabi escape bor — oddiy ko'rinishga keltiramiz
+            return (s or "").replace("\\", "")
+
+        safe_username = user.username if user.username else "N/A"
+        safe_prompt = (prompt or "").replace("`", "'")
+
         caption_text = (
-            f"🎨 <b>Yangi generatsiya!</b>\n\n"
-            f"👤 <b>Foydalanuvchi:</b> @{user.username if user.username else 'N/A'} "
-            f"(ID: <code>{user.id}</code>)\n"
-            f"📝 <b>Prompt:</b> <code>{prompt}</code>\n"
-            f"🔢 <b>Soni:</b> {count}\n"
-            f"🆔 <b>Image ID:</b> <code>{image_id}</code>\n"
-            f"⏰ <b>Vaqt (UTC+5):</b> {tashkent_dt.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"{_clean(lang.get('admin_new_generation', '🎨 New generation'))}\n\n"
+            f"{_clean(lang.get('admin_user', '👤 User:'))} @{safe_username} (ID: `{user.id}`)\n"
+            f"{_clean(lang.get('admin_prompt', '📝 Prompt:'))} `{safe_prompt}`\n"
+            f"{_clean(lang.get('admin_count', '🔢 Count:'))} {count}\n"
+            f"{_clean(lang.get('admin_image_id', '🆔 Image ID:'))} `{image_id}`\n"
+            f"{_clean(lang.get('admin_time', '⏰ Time (UTC+5):'))} {tashkent_dt.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         # Agar rasm mavjud bo‘lsa — bitta media group sifatida yuboramiz
@@ -2213,27 +2213,18 @@ async def notify_admin_generation(context: ContextTypes.DEFAULT_TYPE, user, prom
             media = []
             for i, url in enumerate(image_urls):
                 if i == 0:
-                    # Faqat birinchi rasm caption bilan bo‘ladi
-                    media.append(InputMediaPhoto(media=url, caption=caption_text, parse_mode="HTML"))
+                    media.append(InputMediaPhoto(media=url, caption=caption_text, parse_mode="Markdown"))
                 else:
                     media.append(InputMediaPhoto(media=url))
 
             await context.bot.send_media_group(chat_id=ADMIN_ID, media=media)
             logger.info(f"[ADMIN NOTIFY] Foydalanuvchi {user.id} uchun {len(image_urls)} ta rasm media group sifatida yuborildi.")
-
         else:
-            # Rasm yo'q — faqat matn yuboriladi
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=caption_text,
-                parse_mode="HTML"
-            )
+            await context.bot.send_message(chat_id=ADMIN_ID, text=caption_text, parse_mode="Markdown")
             logger.info(f"[ADMIN NOTIFY] Foydalanuvchi {user.id} uchun faqat matn yuborildi (rasm yo‘q).")
 
     except Exception as e:
         logger.exception(f"[ADMIN NOTIFY ERROR] Umumiy xato: {e}")
-
-#---------------------------------------------------------------
 
 async def notify_admin_on_error(
     context: ContextTypes.DEFAULT_TYPE,
@@ -2444,12 +2435,12 @@ async def cmd_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.effective_chat.type
     if chat_type in ("group", "supergroup"):
         if not context.args:
-            await update.message.reply_text("❌ Guruhda /get dan keyin prompt yozing. Misol: /get futuristik shahar")
+            await update.message.reply_text(lang["get_no_args_group"])
             return
         prompt = " ".join(context.args)
     else:
         if not context.args:
-            await update.message.reply_text("✍️ Iltimos, rasm uchun matn yozing.")
+            await update.message.reply_text(lang["get_no_args_private"])
             return
         prompt = " ".join(context.args)
     await add_user_db(context.application.bot_data["db_pool"], update.effective_user)
@@ -2615,10 +2606,9 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             ]
         ]
         await update.message.reply_text(
-    f"{lang['select_count']}\n{escape_md(lang['your_prompt_label'])}\n{escape_md(prompt)}",
-    parse_mode="MarkdownV2",
-    reply_markup=InlineKeyboardMarkup(kb)
-)
+            f"{lang['select_count']}\n{escape_md(lang['your_prompt_label'])}\n{escape_md(prompt)}",
+            parse_mode="MarkdownV2",
+            reply_markup=InlineKeyboardMarkup(kb)
         )
 async def gen_image_from_prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -3141,32 +3131,55 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 async def cmd_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    pool = context.application.bot_data["db_pool"]
+
+    # Admin tilini olish
+    lang_code = DEFAULT_LANGUAGE
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT language_code FROM users WHERE id = $1", user.id)
+            if row:
+                lang_code = row["language_code"] or DEFAULT_LANGUAGE
+    except Exception:
+        pass
+    lang = get_lang(lang_code)
+
+    # Permission
     if user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Error.")
+        await update.message.reply_text(lang["no_permission"])
         return
+
+    # Usage matni (lug'atdan) — eski "<donation_id>" bo'lsa ham to'g'rilab yuboramiz
+    usage = lang.get("usage_refund", "Usage: /refund <user_id> <telegram_payment_charge_id>")
+    usage = (usage
+             .replace("<donation_id>", "<telegram_payment_charge_id>")
+             .replace("donation_id", "telegram_payment_charge_id"))
+
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("UsageId: /refund <user_id> <telegram_payment_charge_id>")
+        await update.message.reply_text(usage)
         return
+
     try:
         target_user_id = int(context.args[0])
         telegram_payment_charge_id = context.args[1].strip()
     except (ValueError, IndexError):
-        await update.message.reply_text("UsageId: /refund <user_id> <telegram_payment_charge_id>")
+        await update.message.reply_text(usage)
         return
 
     # DB dan stars miqdorini olish (ixtiyoriy, faqat log uchun)
     stars = 0
-    pool = context.application.bot_data["db_pool"]
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT stars FROM donations WHERE charge_id = $1 AND user_id = $2",
-            telegram_payment_charge_id, target_user_id
-        )
-        if row:
-            stars = row["stars"]
-        else:
-            # Agar topilmasa ham, refund qilishga ruxsat beramiz (masalan, eski to'lov bo'lsa)
-            logger.info(f"[REFUND] To'lov DB da topilmadi, lekin refund urinishi davom ettirilmoqda: {telegram_payment_charge_id}")
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT stars FROM donations WHERE charge_id = $1 AND user_id = $2",
+                telegram_payment_charge_id, target_user_id
+            )
+            if row:
+                stars = int(row["stars"] or 0)
+            else:
+                logger.info(f"[REFUND] To'lov DB da topilmadi: {telegram_payment_charge_id}")
+    except Exception as e:
+        logger.warning(f"[REFUND] DB read failed: {e}")
 
     try:
         await context.bot.refund_star_payment(
@@ -3179,21 +3192,40 @@ async def cmd_refund(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "UPDATE donations SET refunded_at = NOW() WHERE charge_id = $1 AND user_id = $2",
                 telegram_payment_charge_id, target_user_id
             )
+
         await update.message.reply_text(
-            f"✅ {stars} Stars muvaffaqiyatli qaytarildi foydalanuvchi {target_user_id} ga."
+            lang["refund_success"].format(stars=stars, user_id=target_user_id)
         )
     except Exception as e:
         logger.exception(f"[REFUND ERROR] {e}")
-        await update.message.reply_text(f"❌ Xatolik: {str(e)}")
+        await update.message.reply_text(lang["refund_error"].format(error=str(e)))
+
+
 # ---------------- Error handler ----------------
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Unhandled exception:", exc_info=context.error)
     try:
         if isinstance(update, Update) and update.effective_chat:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ An error occurred. Please contact the admin or try again.")
+            pool = context.application.bot_data.get("db_pool")
+            lang_code = DEFAULT_LANGUAGE
+            if pool and getattr(update, "effective_user", None):
+                try:
+                    async with pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            "SELECT language_code FROM users WHERE id = $1",
+                            update.effective_user.id
+                        )
+                        if row:
+                            lang_code = row["language_code"] or DEFAULT_LANGUAGE
+                except Exception:
+                    pass
+            lang = get_lang(lang_code)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=lang.get("error_occurred", lang.get("error", "⚠️ An error occurred. Please try again."))
+            )
     except Exception:
         pass
-
 #--------------------------------------------------
 
 # ---------------- Public Statistika (Hamma uchun) ----------------
@@ -3806,18 +3838,951 @@ async def show_stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await cmd_public_stats(update, context, edit_mode=True)
 #-------------------------------------------------------
 # ---------------- Startup ----------------
+
+# ===================== MAJOR UPDATE: Premium NSFW + Robust Limits & UX =====================
+# Single-file design (main.py) by request.
+
+from dataclasses import dataclass
+from typing import Optional, Dict, List, Tuple, Any
+import itertools
+
+# Optional watermark (Free only). If Pillow is not installed, fallback to caption watermark.
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    _PIL_OK = True
+except Exception:
+    _PIL_OK = False
+
+# ---------------- Premium / Limits config ----------------
+# Backward compatibility: if DAILY_FREE_IMAGES env exists, we treat it as FREE_DAILY_REQUESTS for Free(1 img/request).
+FREE_DAILY_REQUESTS = int(os.getenv("FREE_DAILY_REQUESTS", os.getenv("DAILY_FREE_IMAGES", "15")))
+DAILY_FREE_IMAGES = FREE_DAILY_REQUESTS  # keep old name used elsewhere
+
+FREE_COOLDOWN_SECONDS = int(os.getenv("FREE_COOLDOWN_SECONDS", "75"))  # 60–90 sec recommended
+PREMIUM_IMAGE_COUNT = int(os.getenv("PREMIUM_IMAGE_COUNT", "4"))
+
+STANDARD_QUEUE_SOFT_LIMIT = int(os.getenv("STANDARD_QUEUE_SOFT_LIMIT", "120"))
+STANDARD_QUEUE_HARD_LIMIT = int(os.getenv("STANDARD_QUEUE_HARD_LIMIT", "220"))
+PRIORITY_QUEUE_HARD_LIMIT = int(os.getenv("PRIORITY_QUEUE_HARD_LIMIT", "220"))
+
+WORKER_COUNT = int(os.getenv("WORKER_COUNT", "2"))
+
+WATERMARK_TEXT = os.getenv("FREE_WATERMARK_TEXT", "Generated by Digen AI")
+
+# Premium plans (Telegram Stars currency "XTR")
+PREMIUM_24H_PRICE_STARS = int(os.getenv("PREMIUM_24H_PRICE_STARS", "120"))
+PREMIUM_7D_PRICE_STARS = int(os.getenv("PREMIUM_7D_PRICE_STARS", "490"))
+PREMIUM_30D_PRICE_STARS = int(os.getenv("PREMIUM_30D_PRICE_STARS", "1490"))
+
+# ---------------- i18n: add missing keys safely ----------------
+def _ensure_lang_keys():
+    en = LANGUAGES.get("en", {})
+    uz = LANGUAGES.get("uz", {})
+
+    en.update({
+        "stats_button": "📈 Stats",
+        "premium_button": "⭐ Premium",
+        "premium_title": "⭐ Premium",
+        "premium_desc": "Unlock NSFW, priority generation, and 4-image batches.\n\nFree users: 1 image/request, cooldown, daily limits, NSFW blocked.",
+        "premium_plan_24h": "24h Pass",
+        "premium_plan_7d": "7 Days",
+        "premium_plan_30d": "30 Days",
+        "premium_buy": "Upgrade",
+        "premium_active_until": "Premium active until: {until}",
+        "premium_not_active": "Premium is not active.",
+        "premium_activated": "✅ Premium activated — NSFW unlocked. Enjoy priority generation and 4-image batches!",
+        "nsfw_blocked_free": "🔞 Adult content is available only for Premium members.\nUpgrade to Premium to unlock NSFW, priority processing, and 4-image batches.",
+        "batch_premium_only": "⭐ 2–4 images per request are available only for Premium members.",
+        "quota_reached_friendly": "⏳ You’ve used your Free quota for today.\nWant more? Upgrade to Premium for unlimited generation and priority processing.",
+        "cooldown_friendly": "⏳ Please wait {sec}s before the next free request. Premium has no cooldown.",
+        "already_processing": "⚙️ You already have an active request. Please wait until it finishes.",
+        "queued": "🕒 Queued — estimated wait ~{sec}s.",
+        "processing": "🔄 Processing your request…",
+        "high_load": "⚠️ High load right now. Your request may take longer.\nWant to skip the line? Upgrade to Premium for priority processing.",
+        "illegal_block": "⛔ This request cannot be processed.",
+        "back_to_main_button": "⬅️ Back",
+    })
+
+    uz.update({
+        "stats_button": "📈 Statistika",
+        "premium_button": "⭐ Premium",
+        "premium_title": "⭐ Premium",
+        "premium_desc": "Premium: NSFW, prioritet navbat, 4 ta rasm/bitta so‘rov, cooldown yo‘q.\n\nFree: 1 ta rasm/bitta so‘rov, cooldown, kunlik limit, NSFW yopiq.",
+        "premium_plan_24h": "24 soat",
+        "premium_plan_7d": "7 kun",
+        "premium_plan_30d": "30 kun",
+        "premium_buy": "Premium olish",
+        "premium_active_until": "Premium amal qiladi: {until}",
+        "premium_not_active": "Premium aktiv emas.",
+        "premium_activated": "✅ Premium aktiv! NSFW ochildi. Prioritet generatsiya va 4-rasm batch’dan rohatlaning!",
+        "nsfw_blocked_free": "🔞 Adult (NSFW) kontent faqat Premium’da.\nPremiumga o‘ting — NSFW, prioritet va 4 ta rasm/batch ochiladi.",
+        "batch_premium_only": "⭐ 2–4 ta rasm/bitta so‘rov faqat Premium’da.",
+        "quota_reached_friendly": "⏳ Bugungi bepul limit tugadi.\nKo‘proq kerakmi? Premiumga o‘ting — cheksiz va prioritet generatsiya.",
+        "cooldown_friendly": "⏳ Keyingi bepul so‘rov uchun {sec}s kuting. Premium’da cooldown yo‘q.",
+        "already_processing": "⚙️ Sizda aktiv so‘rov bor. Iltimos, yakunlanishini kuting.",
+        "queued": "🕒 Navbatga qo‘shildi — taxminiy kutish ~{sec}s.",
+        "processing": "🔄 So‘rovingiz bajarilmoqda…",
+        "high_load": "⚠️ Hozir yuklama yuqori. So‘rov biroz cho‘zilishi mumkin.\nNavbatsiz bo‘lishni xohlaysizmi? Premium — prioritet navbat.",
+        "illegal_block": "⛔ Bu so‘rovni bajara olmaymiz.",
+        "back_to_main_button": "⬅️ Orqaga",
+    })
+
+_ensure_lang_keys()
+
+def t(lang: dict, key: str, **kwargs) -> str:
+    """Safe translation getter with EN fallback."""
+    base = lang.get(key) or LANGUAGES.get("en", {}).get(key) or key
+    try:
+        return base.format(**kwargs) if kwargs else base
+    except Exception:
+        return base
+
+# ---------------- DB migrations (Premium + NSFW + Requests) ----------------
+MAJOR_MIGRATIONS_SQL = """
+-- Users additions
+ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_subscribed BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_type TEXT DEFAULT 'none';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expire TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_free_request_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS total_requests INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS total_images INT DEFAULT 0;
+
+-- Generations additions
+ALTER TABLE generations ADD COLUMN IF NOT EXISTS is_premium BOOLEAN DEFAULT FALSE;
+ALTER TABLE generations ADD COLUMN IF NOT EXISTS nsfw_flag BOOLEAN DEFAULT FALSE;
+
+-- Requests table (queue tracking)
+CREATE TABLE IF NOT EXISTS requests (
+    id UUID PRIMARY KEY,
+    user_id BIGINT,
+    prompt_text TEXT,
+    image_count INT,
+    is_premium BOOLEAN,
+    nsfw_flag BOOLEAN,
+    status TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    error TEXT
+);
+
+-- Transactions (Stars payments)
+CREATE TABLE IF NOT EXISTS transactions (
+    id UUID PRIMARY KEY,
+    user_id BIGINT,
+    kind TEXT, -- donate/quota/subscription
+    amount_stars INT,
+    currency TEXT,
+    status TEXT, -- pending/success/refunded
+    invoice_payload TEXT,
+    telegram_payment_charge_id TEXT,
+    provider_payment_charge_id TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    refunded_at TIMESTAMPTZ
+);
+
+-- NSFW triggers
+CREATE TABLE IF NOT EXISTS nsfw_triggers (
+    id SERIAL PRIMARY KEY,
+    pattern TEXT NOT NULL,
+    locale TEXT DEFAULT 'en',
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Logs
+CREATE TABLE IF NOT EXISTS logs (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    event_type TEXT,
+    meta JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+"""
+
+DEFAULT_NSFW_TRIGGERS = {
+    "en": [
+        r"\bnude\b", r"\bnaked\b", r"\bexplicit\b", r"\bsex\b", r"\bblowjob\b", r"\bpenetration\b",
+        r"\bstrip\b", r"\bboobs?\b", r"\bbreasts?\b", r"\bpussy\b", r"\bvagina\b", r"\bpenis\b",
+        r"\bnsfw\b", r"\bporn\b", r"\berotic\b", r"\bfetish\b",
+    ],
+    "uz": [
+        r"\byalang'och\b", r"\byalangoch\b", r"\bjinsiy\b", r"\bseks\b", r"\bporno\b",
+        r"\bko'krak\b", r"\bkokrak\b", r"\bqov\b", r"\bvagina\b", r"\bpenis\b", r"\bnsfw\b",
+    ],
+    "ru": [
+        r"\bобнажен", r"\bголая\b", r"\bсекс\b", r"\bпорно\b", r"\bэрот", r"\bnsfw\b",
+    ]
+}
+
+# Always-block patterns (minors/illegal). Keep conservative.
+_ILLEGAL_MINOR_PATTERNS = [
+    r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
+    r"\bнесовершеннолет", r"\bребенок\b", r"\bдетск", r"\bшкольниц", r"\bшкольник\b",
+    r"\bболалар\b", r"\bbola\b",
+]
+_ILLEGAL_SEXUAL_VIOLENCE = [
+    r"\brape\b", r"\bincest\b", r"\bbestiality\b",
+    r"\bизнасил", r"\bинцест\b", r"\bскотолож", 
+    r"\bzo'rlash\b", r"\binsest\b",
+]
+
+def _normalize_prompt(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+def _contains_illegal(prompt: str) -> bool:
+    p = _normalize_prompt(prompt)
+    for pat in _ILLEGAL_MINOR_PATTERNS + _ILLEGAL_SEXUAL_VIOLENCE:
+        try:
+            if re.search(pat, p, flags=re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+async def log_event(pool, user_id: int, event_type: str, meta: dict):
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO logs(user_id, event_type, meta) VALUES($1,$2,$3)",
+                user_id, event_type, meta
+            )
+    except Exception:
+        pass
+
+async def ensure_nsfw_defaults(pool):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM nsfw_triggers LIMIT 1")
+        if row:
+            return
+        for locale, patterns in DEFAULT_NSFW_TRIGGERS.items():
+            for pat in patterns:
+                await conn.execute(
+                    "INSERT INTO nsfw_triggers(pattern, locale, active) VALUES($1,$2,TRUE)",
+                    pat, locale
+                )
+        logger.info("✅ Default NSFW triggers inserted.")
+
+async def load_nsfw_triggers(pool) -> Dict[str, List[re.Pattern]]:
+    triggers: Dict[str, List[re.Pattern]] = {}
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT pattern, locale FROM nsfw_triggers WHERE active=TRUE")
+    for r in rows:
+        locale = (r["locale"] or "en").lower()
+        pat = r["pattern"]
+        try:
+            rx = re.compile(pat, flags=re.IGNORECASE)
+        except re.error:
+            continue
+        triggers.setdefault(locale, []).append(rx)
+    if "en" not in triggers:
+        triggers["en"] = [re.compile(p, flags=re.IGNORECASE) for p in DEFAULT_NSFW_TRIGGERS.get("en", [])]
+    return triggers
+
+def is_nsfw_prompt(prompt: str, lang_code: str, triggers: Dict[str, List[re.Pattern]]) -> bool:
+    p = _normalize_prompt(prompt)
+    locale = (lang_code or "en").lower()
+    lst = triggers.get(locale) or triggers.get("en", [])
+    for rx in lst:
+        if rx.search(p):
+            return True
+    return False
+
+# ---------------- Premium helpers ----------------
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+def _is_premium_row(row) -> bool:
+    if not row:
+        return False
+    try:
+        st = (row["subscription_type"] or "none").lower()
+        exp = row["subscription_expire"]
+        if not exp:
+            return False
+        return st in ("pro", "premium") and exp > _now_utc()
+    except Exception:
+        return False
+
+async def get_user_row(pool, user_id: int):
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            "SELECT id, language_code, is_banned, extra_credits, channel_subscribed, "
+            "subscription_type, subscription_expire, last_free_request_at, total_requests, total_images "
+            "FROM users WHERE id=$1",
+            user_id
+        )
+
+def _fmt_dt(dt: Optional[datetime]) -> str:
+    if not dt:
+        return "-"
+    try:
+        tz = timezone(timedelta(hours=5))
+        return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(dt)
+
+async def _count_free_used_today(pool, user_id: int) -> int:
+    start_utc = tashkent_day_start_utc()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT COALESCE(COUNT(*),0) FROM generations WHERE user_id=$1 AND created_at >= $2 AND is_premium=FALSE",
+            user_id, start_utc
+        ) or 0)
+
+# ---------------- Queue / Worker ----------------
+@dataclass
+class GenerationJob:
+    request_id: uuid.UUID
+    user: Any  # telegram.User
+    chat_id: int
+    prompt: str
+    translated_prompt: str
+    count: int
+    lang_code: str
+    is_premium: bool
+    nsfw_flag: bool
+    paid_credits_used: int
+    status_message_id: Optional[int] = None
+
+async def _apply_watermark_bytes(img_bytes: bytes, text: str) -> bytes:
+    if not _PIL_OK:
+        return img_bytes
+    try:
+        from io import BytesIO
+        im = Image.open(BytesIO(img_bytes)).convert("RGBA")
+        w, h = im.size
+        overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", max(14, int(min(w, h) * 0.03)))
+        except Exception:
+            font = ImageFont.load_default()
+
+        padding = int(min(w, h) * 0.02)
+        txt = text
+        bbox = draw.textbbox((0, 0), txt, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = w - tw - padding
+        y = h - th - padding
+        box = (x - padding, y - padding, x + tw + padding, y + th + padding)
+        draw.rectangle(box, fill=(0, 0, 0, 140))
+        draw.text((x, y), txt, font=font, fill=(255, 255, 255, 230))
+
+        out = Image.alpha_composite(im, overlay).convert("RGB")
+        bio = BytesIO()
+        bio.name = "image.jpg"
+        out.save(bio, format="JPEG", quality=92)
+        return bio.getvalue()
+    except Exception:
+        return img_bytes
+
+async def digen_generate_urls(pool, user_id: int, prompt: str, translated: str, count: int) -> Tuple[List[str], str, str, Dict[str, str], str]:
+    """Returns (urls, image_id, final_prompt, headers, lora_id)"""
+    lora_id = ""
+    background_prompt = ""
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT image_model_id FROM users WHERE id=$1", user_id)
+        if row and row["image_model_id"]:
+            lora_id = row["image_model_id"]
+            selected_model = next((m for m in DIGEN_MODELS if m["id"] == lora_id), None)
+            if selected_model and "background_prompts" in selected_model:
+                background_prompt = random.choice(selected_model["background_prompts"])
+    if not background_prompt:
+        background_prompt = random.choice([
+            "high quality, 8k, sharp focus",
+            "ultra-detailed, professional photography",
+            "cinematic lighting, vibrant colors"
+        ])
+
+    final_prompt = f"{translated}, {background_prompt}".strip()
+    payload = {
+        "prompt": final_prompt,
+        "image_size": "768x1368",
+        "width": 768,
+        "height": 1368,
+        "lora_id": lora_id,
+        "batch_size": count,
+        "model": "flux2-klein",
+        "resolution_model": "9:16",
+        "reference_images": [],
+        "strength": "0.9"
+    }
+    headers = get_digen_headers()
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=500)) as session:
+        async with session.post(DIGEN_URL, headers=headers, json=payload) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"DIGEN status={resp.status} body={await resp.text()}")
+            data = await resp.json()
+
+    image_id = (data.get("data") or {}).get("id") or data.get("id")
+    if not image_id:
+        raise RuntimeError(f"DIGEN no image id. data={data}")
+
+    image_id_clean = str(image_id).strip()
+    urls = [f"https://liveme-image.s3.amazonaws.com/{image_id_clean}-{i}.jpeg".strip() for i in range(count)]
+
+    # readiness check
+    first = urls[0]
+    ready = False
+    for _ in range(60):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+                async with s.head(first, allow_redirects=True) as head:
+                    if head.status == 200:
+                        ready = True
+                        break
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+    if not ready:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
+            async with s.get(first, allow_redirects=True) as get:
+                if get.status == 200:
+                    ready = True
+
+    if not ready:
+        raise TimeoutError("Image readiness timeout")
+
+    return urls, image_id_clean, final_prompt, headers, lora_id
+
+async def log_generation(pool, tg_user, prompt, translated, image_id, count, is_premium: bool, nsfw_flag: bool):
+    now = utc_now()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO generations(user_id, username, prompt, translated_prompt, image_id, image_count, created_at, is_premium, nsfw_flag) "
+            "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            tg_user.id, tg_user.username if tg_user.username else None,
+            prompt, translated, image_id, count, now, bool(is_premium), bool(nsfw_flag)
+        )
+        await conn.execute(
+            "UPDATE users SET total_requests = COALESCE(total_requests,0)+1, total_images = COALESCE(total_images,0)+$1 WHERE id=$2",
+            count, tg_user.id
+        )
+
+async def _refund_credits(pool, user_id: int, credits: int):
+    if credits <= 0:
+        return
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET extra_credits = COALESCE(extra_credits,0) + $1 WHERE id=$2", credits, user_id)
+
+async def _mark_request(pool, request_id: uuid.UUID, status: str, error: Optional[str] = None):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE requests SET status=$2, finished_at=NOW(), error=$3 WHERE id=$1",
+            request_id, status, error
+        )
+
+def _estimate_wait_seconds(app: Application) -> int:
+    q: asyncio.PriorityQueue = app.bot_data.get("gen_queue")
+    if not q:
+        return 10
+    size = q.qsize()
+    avg = int(os.getenv("AVG_GEN_SECONDS", "25"))
+    workers = max(int(app.bot_data.get("worker_count", WORKER_COUNT)), 1)
+    return max(5, int((size / workers) * avg))
+
+async def _send_or_edit(bot, chat_id: int, message_id: Optional[int], text: str, reply_markup=None, parse_mode=None):
+    try:
+        if message_id:
+            return await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception:
+        pass
+    return await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+async def process_job(app: Application, job: GenerationJob):
+    pool = app.bot_data["db_pool"]
+    lang = get_lang(job.lang_code)
+    bot = app.bot
+
+    await _send_or_edit(bot, job.chat_id, job.status_message_id, t(lang, "processing"))
+
+    try:
+        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, job.translated_prompt, job.count)
+
+        escaped_prompt = escape_md(job.prompt)
+        model_title = "Default Mode"
+        if lora_id:
+            m = next((m for m in DIGEN_MODELS if m["id"] == lora_id), None)
+            if m:
+                model_title = m["title"]
+
+        # Status line
+        urow = await get_user_row(pool, job.user.id)
+        if job.is_premium and urow and urow["subscription_expire"]:
+            status_line = "⭐ " + t(lang, "premium_active_until", until=_fmt_dt(urow["subscription_expire"]))
+        else:
+            used = await _count_free_used_today(pool, job.user.id)
+            remaining = max(FREE_DAILY_REQUESTS - used, 0)
+            status_line = f"🆓 Free remaining today: {remaining}"
+
+        stats = (
+            f"✅ {job.count} image(s) ready!\n"
+            f"{t(lang,'image_prompt_label',)} {escaped_prompt}\n"
+            f"{t(lang,'image_model_label',)} {model_title}\n"
+            f"{t(lang,'image_count_label',)} {job.count}\n"
+            f"{status_line}\n"
+            f"{t(lang,'image_time_label',)} {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        # Send images
+        if not job.is_premium:
+            first_url = urls[0]
+            caption = stats + f"\n\n{WATERMARK_TEXT}"
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
+                    async with s.get(first_url, allow_redirects=True) as r:
+                        img_bytes = await r.read()
+                wm_bytes = await _apply_watermark_bytes(img_bytes, WATERMARK_TEXT)
+                from io import BytesIO
+                bio = BytesIO(wm_bytes)
+                bio.name = "digen.jpg"
+                await bot.send_photo(chat_id=job.chat_id, photo=bio, caption=caption)
+            except Exception:
+                await bot.send_photo(chat_id=job.chat_id, photo=first_url, caption=caption)
+        else:
+            media = []
+            for i, url in enumerate(urls):
+                caption = stats if i == 0 else ""
+                media.append(InputMediaPhoto(media=url, caption=caption))
+            await bot.send_media_group(chat_id=job.chat_id, media=media, write_timeout=250, read_timeout=250, connect_timeout=250)
+
+        await log_generation(pool, job.user, job.prompt, job.translated_prompt, image_id, job.count, job.is_premium, job.nsfw_flag)
+        await _mark_request(pool, job.request_id, "done")
+
+        # Simple admin notify
+        if ADMIN_ID:
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🖼 Generation done\nuser={job.user.id} @{job.user.username}\ncount={job.count} premium={job.is_premium} nsfw={job.nsfw_flag}\n{job.prompt[:700]}\n{urls[0]}"
+                )
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.exception(f"[JOB ERROR] {e}")
+        await _refund_credits(pool, job.user.id, job.paid_credits_used)
+        await _mark_request(pool, job.request_id, "error", error=str(e)[:500])
+        try:
+            await bot.send_message(chat_id=job.chat_id, text=lang.get("error_occurred", "⚠️ Error occurred. Try again."))
+        except Exception:
+            pass
+        if ADMIN_ID:
+            try:
+                await bot.send_message(ADMIN_ID, f"❌ Job error\nuser={job.user.id}\n{str(e)[:700]}")
+            except Exception:
+                pass
+
+async def gen_worker(app: Application, worker_id: int):
+    q: asyncio.PriorityQueue = app.bot_data["gen_queue"]
+    active: set = app.bot_data["active_users"]
+    while True:
+        pr, seq, job = await q.get()
+        try:
+            await process_job(app, job)
+        finally:
+            active.discard(job.user.id)
+            q.task_done()
+
+# ---------------- Premium UI ----------------
+def premium_keyboard(lang: dict, include_back: bool = True) -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} — {PREMIUM_24H_PRICE_STARS} ⭐", callback_data="premium_buy_24h")],
+        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} — {PREMIUM_7D_PRICE_STARS} ⭐", callback_data="premium_buy_7d")],
+        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} — {PREMIUM_30D_PRICE_STARS} ⭐", callback_data="premium_buy_30d")],
+    ]
+    if include_back:
+        kb.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
+    return InlineKeyboardMarkup(kb)
+
+async def premium_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q:
+        await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    user_id = (q.from_user.id if q else update.effective_user.id)
+    row = await get_user_row(pool, user_id)
+    lang = get_lang((row["language_code"] if row else DEFAULT_LANGUAGE))
+    is_prem = _is_premium_row(row)
+
+    status_line = t(lang, "premium_not_active")
+    if is_prem:
+        status_line = t(lang, "premium_active_until", until=_fmt_dt(row["subscription_expire"]))
+
+    text = f"{t(lang,'premium_title')}\n\n{t(lang,'premium_desc')}\n\n{status_line}"
+    if q:
+        await q.edit_message_text(text, reply_markup=premium_keyboard(lang), disable_web_page_preview=True)
+    else:
+        await update.message.reply_text(text, reply_markup=premium_keyboard(lang), disable_web_page_preview=True)
+
+async def premium_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    row = await get_user_row(pool, q.from_user.id)
+    lang = get_lang((row["language_code"] if row else DEFAULT_LANGUAGE))
+
+    plan = q.data.replace("premium_buy_", "")
+    if plan == "24h":
+        stars = PREMIUM_24H_PRICE_STARS
+        title = f"⭐ Premium — {t(lang,'premium_plan_24h')}"
+    elif plan == "7d":
+        stars = PREMIUM_7D_PRICE_STARS
+        title = f"⭐ Premium — {t(lang,'premium_plan_7d')}"
+    else:
+        stars = PREMIUM_30D_PRICE_STARS
+        title = f"⭐ Premium — {t(lang,'premium_plan_30d')}"
+
+    payload = f"sub_{q.from_user.id}_{plan}_{int(time.time())}"
+    prices = [LabeledPrice(title, stars)]
+    await context.bot.send_invoice(
+        chat_id=q.message.chat_id,
+        title=title,
+        description=t(lang, "premium_desc"),
+        payload=payload,
+        provider_token="",
+        currency="XTR",
+        prices=prices,
+        is_flexible=False
+    )
+
+# ---------------- New generation rules (enqueue + NSFW + limits) ----------------
+async def _consume_free_or_paid(pool, user_id: int) -> Tuple[bool, dict]:
+    now = _now_utc()
+    start_utc = tashkent_day_start_utc()
+    async with pool.acquire() as conn:
+        u = await conn.fetchrow(
+            "SELECT is_banned, extra_credits, last_free_request_at FROM users WHERE id=$1 FOR UPDATE",
+            user_id
+        )
+        if u and u["is_banned"]:
+            return False, {"reason": "banned"}
+
+        last = u["last_free_request_at"] if u else None
+        if last:
+            delta = (now - last).total_seconds()
+            if delta < FREE_COOLDOWN_SECONDS:
+                return False, {"reason": "cooldown", "sec": int(FREE_COOLDOWN_SECONDS - delta)}
+
+        used = int(await conn.fetchval(
+            "SELECT COALESCE(COUNT(*),0) FROM generations WHERE user_id=$1 AND created_at >= $2 AND is_premium=FALSE",
+            user_id, start_utc
+        ) or 0)
+
+        if used < FREE_DAILY_REQUESTS:
+            await conn.execute("UPDATE users SET last_free_request_at=$1 WHERE id=$2", now, user_id)
+            return True, {"mode": "free", "used": used}
+
+        credits = int((u["extra_credits"] if u else 0) or 0)
+        if credits >= 1:
+            await conn.execute("UPDATE users SET extra_credits = extra_credits - 1, last_free_request_at=$1 WHERE id=$2", now, user_id)
+            return True, {"mode": "paid", "paid_credits_used": 1, "used": used, "credits_left": credits-1}
+
+        return False, {"reason": "quota", "used": used, "credits": credits}
+
+async def enqueue_generation(app: Application, job: GenerationJob) -> None:
+    q: asyncio.PriorityQueue = app.bot_data["gen_queue"]
+    seq_counter = app.bot_data["queue_seq"]
+    seq = next(seq_counter)
+    priority = 0 if job.is_premium else 1
+    await q.put((priority, seq, job))
+
+async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    app = context.application
+    pool = app.bot_data["db_pool"]
+
+    await add_user_db(pool, q.from_user)
+    row = await get_user_row(pool, q.from_user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    if not await force_sub_if_private(update, context, lang_code=lang_code):
+        return
+
+    try:
+        req_count = int(q.data.split("_")[1])
+    except Exception:
+        await q.edit_message_text(lang.get("error_occurred", "⚠️ Error occurred."))
+        return
+
+    prompt = context.user_data.get("prompt", "") or ""
+    translated = context.user_data.get("translated", prompt) or prompt
+
+    is_premium = _is_premium_row(row)
+
+    if not is_premium and req_count != 1:
+        kb = [
+            [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
+        ]
+        await q.edit_message_text(t(lang, "batch_premium_only") + "\n\n" + t(lang, "premium_desc"), reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    count = min(req_count, PREMIUM_IMAGE_COUNT) if is_premium else 1
+
+    if _contains_illegal(prompt):
+        await log_event(pool, q.from_user.id, "blocked_illegal", {"prompt": prompt})
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(ADMIN_ID, f"🚫 ILLEGAL/MINOR BLOCK\nuser={q.from_user.id}\n{prompt[:700]}")
+            except Exception:
+                pass
+        await q.edit_message_text(t(lang, "illegal_block"))
+        return
+
+    triggers = app.bot_data.get("nsfw_triggers") or {}
+    nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
+    if nsfw_flag and not is_premium:
+        kb = [
+            [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
+        ]
+        await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=InlineKeyboardMarkup(kb))
+        await log_event(pool, q.from_user.id, "blocked_nsfw_free", {"prompt": prompt})
+        return
+
+    active: set = app.bot_data["active_users"]
+    if q.from_user.id in active:
+        await q.edit_message_text(t(lang, "already_processing"))
+        return
+
+    gen_q: asyncio.PriorityQueue = app.bot_data["gen_queue"]
+    if not is_premium and gen_q.qsize() >= STANDARD_QUEUE_HARD_LIMIT:
+        await q.edit_message_text(t(lang, "high_load"))
+        return
+
+    paid_credits_used = 0
+    if not is_premium:
+        ok, info = await _consume_free_or_paid(pool, q.from_user.id)
+        if not ok:
+            if info.get("reason") == "banned":
+                await q.edit_message_text("⛔ Sizning akkauntingiz ban qilingan.")
+                return
+            if info.get("reason") == "cooldown":
+                await q.edit_message_text(t(lang, "cooldown_friendly", sec=int(info.get("sec", 0))))
+                return
+            if info.get("reason") == "quota":
+                msg = t(lang, "quota_reached_friendly") + "\n\n" + t(lang, "premium_desc")
+                kb = [
+                    [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+                    [InlineKeyboardButton(f"💫 +{EXTRA_PACK_SIZE} — {EXTRA_PACK_PRICE_STARS} ⭐", callback_data=f"buy_pack_{EXTRA_PACK_SIZE}")],
+                    [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")],
+                ]
+                await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+                return
+        paid_credits_used = int(info.get("paid_credits_used") or 0)
+
+    request_id = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO requests(id, user_id, prompt_text, image_count, is_premium, nsfw_flag, status) "
+            "VALUES($1,$2,$3,$4,$5,$6,'queued')",
+            request_id, q.from_user.id, prompt, count, bool(is_premium), bool(nsfw_flag)
+        )
+
+    active.add(q.from_user.id)
+    wait_sec = _estimate_wait_seconds(app)
+    status_msg = await q.message.reply_text(t(lang, "queued", sec=wait_sec))
+    job = GenerationJob(
+        request_id=request_id,
+        user=q.from_user,
+        chat_id=q.message.chat_id,
+        prompt=prompt,
+        translated_prompt=translated,
+        count=count,
+        lang_code=lang_code,
+        is_premium=is_premium,
+        nsfw_flag=bool(nsfw_flag),
+        paid_credits_used=paid_credits_used,
+        status_message_id=status_msg.message_id if status_msg else None,
+    )
+    await enqueue_generation(app, job)
+
+# ---------------- Successful payments (Stars) with Premium activation ----------------
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    user = update.effective_user
+    pool = context.application.bot_data["db_pool"]
+
+    await add_user_db(pool, user)
+    row = await get_user_row(pool, user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    payload = payment.invoice_payload or ""
+    amount_stars = int(payment.total_amount or 0)
+    charge_id = payment.telegram_payment_charge_id
+    provider_charge_id = getattr(payment, "provider_payment_charge_id", None)
+
+    tx_id = uuid.uuid4()
+    kind = "donate"
+    if payload.startswith("quota_"):
+        kind = "quota"
+    elif payload.startswith("sub_"):
+        kind = "subscription"
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO transactions(id, user_id, kind, amount_stars, currency, status, invoice_payload, telegram_payment_charge_id, provider_payment_charge_id) "
+            "VALUES($1,$2,$3,$4,'XTR','success',$5,$6,$7)",
+            tx_id, user.id, kind, amount_stars, payload, charge_id, provider_charge_id
+        )
+        await conn.execute(
+            "INSERT INTO donations(user_id, username, stars, payload, charge_id) VALUES($1,$2,$3,$4,$5)",
+            user.id, user.username if user.username else None, amount_stars, payload, charge_id
+        )
+
+    if payload.startswith("quota_"):
+        try:
+            parts = payload.split("_")
+            credits = int(parts[2])
+        except Exception:
+            credits = EXTRA_PACK_SIZE
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET extra_credits = COALESCE(extra_credits,0) + $1 WHERE id=$2",
+                credits, user.id
+            )
+        await update.message.reply_text(lang.get("quota_pack_thanks", "✅ Payment accepted! +{credits} credits").format(credits=credits))
+        return
+
+    if payload.startswith("sub_"):
+        plan = "24h"
+        try:
+            parts = payload.split("_")
+            plan = parts[2]
+        except Exception:
+            plan = "24h"
+
+        if plan == "24h":
+            delta = timedelta(hours=24)
+        elif plan == "7d":
+            delta = timedelta(days=7)
+        else:
+            delta = timedelta(days=30)
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                u = await conn.fetchrow("SELECT subscription_expire FROM users WHERE id=$1 FOR UPDATE", user.id)
+                base = _now_utc()
+                if u and u["subscription_expire"] and u["subscription_expire"] > base:
+                    base = u["subscription_expire"]
+                new_exp = base + delta
+                await conn.execute("UPDATE users SET subscription_type='pro', subscription_expire=$1 WHERE id=$2", new_exp, user.id)
+
+        await update.message.reply_text(t(lang, "premium_activated"))
+        return
+
+    # Donate fallback
+    if "donate_thanks" in lang:
+        await update.message.reply_text(lang["donate_thanks"].format(name=(user.first_name or "friend"), stars=amount_stars))
+    else:
+        await update.message.reply_text(f"✅ Thanks! {amount_stars} Stars received.")
+
+# ---------------- Main menu improvements ----------------
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    pool = context.application.bot_data["db_pool"]
+    await add_user_db(pool, user)
+
+    row = await get_user_row(pool, user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    is_premium = _is_premium_row(row)
+    if is_premium and row and row["subscription_expire"]:
+        status_line = "⭐ " + t(lang, "premium_active_until", until=_fmt_dt(row["subscription_expire"]))
+    else:
+        used = await _count_free_used_today(pool, user.id)
+        remaining = max(FREE_DAILY_REQUESTS - used, 0)
+        status_line = f"🆓 Free remaining today: {remaining}"
+
+    credits = int((row["extra_credits"] if row else 0) or 0)
+    status = f"{status_line}\n💫 Extra credits: {credits}"
+
+    kb = [
+        [
+            InlineKeyboardButton(lang["gen_button"], callback_data="start_gen"),
+            InlineKeyboardButton(lang["ai_button"], callback_data="start_ai_flow")
+        ],
+        [
+            InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu"),
+            InlineKeyboardButton(lang["donate_button"], callback_data="donate_custom")
+        ],
+        [
+            InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats"),
+            InlineKeyboardButton(lang["settings_menu_title"], callback_data="open_settings")
+        ],
+        [
+            InlineKeyboardButton("🧪 FakeLab", callback_data="fake_lab_new"),
+            InlineKeyboardButton("🎨 Random AI Anime", callback_data="random_anime")
+        ],
+    ]
+    if user.id == ADMIN_ID:
+        kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
+
+    text = f"{lang['welcome']}\n\n{status}"
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        except Exception:
+            await update.effective_chat.send_message(text, reply_markup=InlineKeyboardMarkup(kb))
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+# ---------------- Startup / Shutdown ----------------
+async def init_db(pool):
+    async with pool.acquire() as conn:
+        await conn.execute(CREATE_TABLES_SQL)
+        row = await conn.fetchrow("SELECT value FROM meta WHERE key = 'start_time'")
+        if not row:
+            await conn.execute("INSERT INTO meta(key, value) VALUES($1, $2)", "start_time", str(int(time.time())))
+
+    async with pool.acquire() as conn:
+        try:
+            await conn.execute(MAJOR_MIGRATIONS_SQL)
+            logger.info("✅ Major migrations applied.")
+        except Exception as e:
+            logger.warning(f"ℹ️ Major migrations: {e}")
+
+    await ensure_nsfw_defaults(pool)
+
 async def on_startup(app: Application):
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=4)
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=6)
     app.bot_data["db_pool"] = pool
     await init_db(pool)
-    logger.info("✅ DB initialized and pool created.")
 
-# ---------------- MAIN ----------------
+    app.bot_data["nsfw_triggers"] = await load_nsfw_triggers(pool)
+    app.bot_data["gen_queue"] = asyncio.PriorityQueue()
+    app.bot_data["active_users"] = set()
+    app.bot_data["queue_seq"] = itertools.count()
+    app.bot_data["worker_count"] = WORKER_COUNT
+
+    for wid in range(WORKER_COUNT):
+        app.create_task(gen_worker(app, wid))
+
+    logger.info(f"✅ Startup complete. Workers={WORKER_COUNT}")
+
+async def on_shutdown(app: Application):
+    try:
+        pool = app.bot_data.get("db_pool")
+        if pool:
+            await pool.close()
+    except Exception:
+        pass
+
+# ---------------- MAIN (updated) ----------------
 def build_app():
-    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
     all_lang_pattern = r"lang_(uz|ru|en|id|lt|esmx|eses|it|zhcn|bn|hi|ptbr|ar|uk|vi)"
-    
-    # --- Handlers ---
+
+    # Admin
     app.add_handler(CallbackQueryHandler(admin_stats_handler, pattern="^admin_stats$"))
     app.add_handler(CallbackQueryHandler(admin_panel_handler, pattern="^admin_panel$"))
     app.add_handler(CallbackQueryHandler(admin_users_list_handler, pattern=r"^admin_users_list_\d+$"))
@@ -3835,10 +4800,15 @@ def build_app():
     app.add_handler(CallbackQueryHandler(admin_ban_inline_handler, pattern=r"^admin_ban_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_unban_inline_handler, pattern=r"^admin_unban_\d+$"))
     app.add_handler(
-    MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND,
-                   admin_user_search_handler),
-    group=5
+        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_user_search_handler),
+        group=5
     )
+
+    # Premium
+    app.add_handler(CallbackQueryHandler(premium_menu_handler, pattern="^premium_menu$"))
+    app.add_handler(CallbackQueryHandler(premium_buy_handler, pattern=r"^premium_buy_(24h|7d|30d)$"))
+
+    # Stats & start
     app.add_handler(CommandHandler("stats", cmd_public_stats))
     app.add_handler(CallbackQueryHandler(settings_menu, pattern="^back_to_settings$"))
     app.add_handler(CallbackQueryHandler(start_handler, pattern="^back_to_main$"))
@@ -3846,13 +4816,19 @@ def build_app():
     app.add_handler(CallbackQueryHandler(fake_lab_refresh_handler, pattern="^fake_lab_refresh$"))
     app.add_handler(CallbackQueryHandler(show_stats_handler, pattern="^show_stats$"))
     app.add_handler(CommandHandler("start", start_handler))
+
+    # Language
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CallbackQueryHandler(cmd_language, pattern="^change_language$"))
     app.add_handler(CallbackQueryHandler(language_select_handler, pattern=all_lang_pattern))
+
+    # Settings / Model selection
     app.add_handler(CallbackQueryHandler(settings_menu, pattern="^open_settings$"))
     app.add_handler(CallbackQueryHandler(select_image_model, pattern="^select_image_model$"))
     app.add_handler(CallbackQueryHandler(confirm_model_selection, pattern=r"^confirm_model_.*$"))
     app.add_handler(CallbackQueryHandler(set_image_model, pattern=r"^set_model_.*$"))
+
+    # Fun
     app.add_handler(CallbackQueryHandler(random_anime_handler, pattern="^random_anime$"))
     app.add_handler(CallbackQueryHandler(random_anime_refresh_handler, pattern="^random_anime_refresh$"))
 
@@ -3865,7 +4841,7 @@ def build_app():
     )
     app.add_handler(donate_conv)
 
-    # Admin Ban/Unban (ID) conversation
+    # Admin conversations
     ban_unban_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(admin_ban_start, pattern="^admin_ban_start$"),
@@ -3880,20 +4856,14 @@ def build_app():
     )
     app.add_handler(ban_unban_conv)
 
-    # Admin send message to user conversation
     sendmsg_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_sendmsg_start, pattern=r"^admin_sendmsg_\d+$")],
-        states={
-            ADMIN_SENDMSG_STATE: [MessageHandler(filters.ALL & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_sendmsg_send)]
-        },
+        states={ADMIN_SENDMSG_STATE: [MessageHandler(filters.ALL & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_sendmsg_send)]},
         fallbacks=[],
         per_message=False
     )
     app.add_handler(sendmsg_conv)
 
-    # Admin panel
-
-    # Broadcast
     broadcast_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_broadcast_start, pattern=r"^(admin_broadcast|admin_broadcast_menu)$")],
         states={BROADCAST_STATE: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_broadcast_send)]},
@@ -3901,10 +4871,9 @@ def build_app():
     )
     app.add_handler(broadcast_conv)
 
-    # Kanallar
     app.add_handler(CallbackQueryHandler(admin_channels_handler, pattern="^admin_channels$"))
 
-    # Qolgan handlerlar
+    # Core flow
     app.add_handler(CallbackQueryHandler(handle_start_gen, pattern="^start_gen$"))
     app.add_handler(CallbackQueryHandler(start_ai_flow_handler, pattern="^start_ai_flow$"))
     app.add_handler(CallbackQueryHandler(check_sub_button_handler, pattern="^check_sub$"))
@@ -3912,20 +4881,25 @@ def build_app():
     app.add_handler(CallbackQueryHandler(buy_pack_handler, pattern=r"^buy_pack_\d+$"))
     app.add_handler(CallbackQueryHandler(gen_image_from_prompt_handler, pattern="^gen_image_from_prompt$"))
     app.add_handler(CallbackQueryHandler(ai_chat_from_prompt_handler, pattern="^ai_chat_from_prompt$"))
+
+    # Commands
     app.add_handler(CommandHandler("get", cmd_get))
     app.add_handler(CommandHandler("refund", cmd_refund))
+
+    # Payments
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_handler))
-    app.add_error_handler(on_error)
 
+    # Text
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_handler))
+
+    app.add_error_handler(on_error)
     return app
 
 def main():
     app = build_app()
     logger.info("Application initialized. Starting polling...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
