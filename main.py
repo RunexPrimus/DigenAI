@@ -3883,14 +3883,14 @@ def _ensure_lang_keys():
         "stats_button": "📈 Stats",
         "premium_button": "⭐ Premium",
         "premium_title": "⭐ Premium",
-        "premium_desc": "Unlock NSFW(Adult Content)🔞, priority generation, and 4-image batches.\n\nFree users: 1 image/request, cooldown, daily limits, NSFW blocked.",
+        "premium_desc": "Unlock NSFW, priority generation, and 4-image batches.\n\nFree users: 1 image/request, cooldown, daily limits, NSFW blocked.",
         "premium_plan_24h": "24h Pass",
         "premium_plan_7d": "7 Days",
         "premium_plan_30d": "30 Days",
         "premium_buy": "Upgrade",
         "premium_active_until": "Premium active until: {until}",
         "premium_not_active": "Premium is not active.",
-        "premium_activated": "✅ Premium activated — NSFW(Adult Content)🔞 unlocked. Enjoy priority generation and 4-image batches!",
+        "premium_activated": "✅ Premium activated — NSFW unlocked. Enjoy priority generation and 4-image batches!",
         "nsfw_blocked_free": "🔞 Adult content is available only for Premium members.\nUpgrade to Premium to unlock NSFW, priority processing, and 4-image batches.",
         "batch_premium_only": "⭐ 2–4 images per request are available only for Premium members.",
         "quota_reached_friendly": "⏳ You’ve used your Free quota for today.\nWant more? Upgrade to Premium for unlimited generation and priority processing.",
@@ -4016,10 +4016,14 @@ DEFAULT_NSFW_TRIGGERS = {
 
 # Always-block patterns (minors/illegal). Keep conservative.
 _ILLEGAL_MINOR_PATTERNS = [
-    r"\brape\b",
+    r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
+    r"\bнесовершеннолет", r"\bребенок\b", r"\bдетск", r"\bшкольниц", r"\bшкольник\b",
+    r"\bболалар\b", r"\bbola\b",
 ]
 _ILLEGAL_SEXUAL_VIOLENCE = [
-    r"\brape\b",
+    r"\brape\b", r"\bincest\b", r"\bbestiality\b",
+    r"\bизнасил", r"\bинцест\b", r"\bскотолож", 
+    r"\bzo'rlash\b", r"\binsest\b",
 ]
 
 def _normalize_prompt(s: str) -> str:
@@ -4895,6 +4899,1102 @@ def build_app():
 def main():
     app = build_app()
     logger.info("Application initialized. Starting polling...")
+    app.run_polling()
+
+
+# ===================== UX & FEATURE PATCH (Soft UI + Profile + Image Style + Inline + Admin Album + Caption Safe) =====================
+# This block overrides some functions below to meet the latest UX requirements WITHOUT breaking legacy code.
+
+from telegram import InlineQueryResultArticle, InputTextMessageContent
+from telegram.ext import InlineQueryHandler, ChosenInlineResultHandler
+
+# --- i18n patch: soft copy + profile + image style (all languages) ---
+STYLE_KEYS = [
+    "style_default", "style_photo", "style_anime", "style_cinematic", "style_pixel",
+    "style_watercolor", "style_3d", "style_comic", "style_lowpoly", "style_neon", "style_sketch", "style_retro"
+]
+
+# Style prompt addons (EN; appended to translated prompt)
+STYLE_PROMPT_ADDONS = {
+    "style_default": "",
+    "style_photo": "photorealistic, ultra-detailed, realistic lighting, 35mm, sharp focus",
+    "style_anime": "anime style, clean lineart, vibrant colors, high quality anime illustration",
+    "style_cinematic": "cinematic still, dramatic lighting, film grain, depth of field",
+    "style_pixel": "pixel art, 16-bit retro game style, crisp pixels",
+    "style_watercolor": "watercolor painting, soft brush strokes, paper texture",
+    "style_3d": "3d render, realistic materials, soft global illumination",
+    "style_comic": "comic book style, bold outlines, halftone shading",
+    "style_lowpoly": "low poly 3d, geometric facets, minimal shading",
+    "style_neon": "cyberpunk neon, glowing lights, night mood, vibrant neon palette",
+    "style_sketch": "pencil sketch, graphite lines, detailed hatching, monochrome",
+    "style_retro": "retro 80s synthwave aesthetic, vintage film look",
+}
+
+# Human-facing style names translated (inserted into LANGUAGES dict as requested)
+_STYLE_NAMES = {
+    "style_default": {"en":"Default Mode","uz":"Default Mode","ru":"По умолчанию","id":"Default","lt":"Numatytas","esmx":"Predeterminado","eses":"Predeterminado","it":"Predefinito","zhcn":"默认模式","bn":"ডিফল্ট","hi":"डिफ़ॉल्ट","ptbr":"Padrão","ar":"افتراضي","uk":"За замовчуванням","vi":"Mặc định"},
+    "style_photo": {"en":"Photoreal","uz":"Fotoreal","ru":"Фотореализм","id":"Fotoreal","lt":"Fotorealistinis","esmx":"Fotorreal","eses":"Fotorreal","it":"Fotorealistico","zhcn":"写实","bn":"ফটো-রিয়াল","hi":"फोटो-रियल","ptbr":"Fotorreal","ar":"واقعي جدًا","uk":"Фотореал","vi":"Ảnh thật"},
+    "style_anime": {"en":"Anime","uz":"Anime","ru":"Аниме","id":"Anime","lt":"Anime","esmx":"Anime","eses":"Anime","it":"Anime","zhcn":"动漫","bn":"অ্যানিমে","hi":"एनीमे","ptbr":"Anime","ar":"أنمي","uk":"Аніме","vi":"Anime"},
+    "style_cinematic": {"en":"Cinematic","uz":"Kinematik","ru":"Кинематографично","id":"Sinematik","lt":"Kinematografinis","esmx":"Cinemático","eses":"Cinemático","it":"Cinematico","zhcn":"电影感","bn":"সিনেমাটিক","hi":"सिनेमैटिक","ptbr":"Cinemático","ar":"سينمائي","uk":"Кінематографічний","vi":"Điện ảnh"},
+    "style_pixel": {"en":"Pixel Art","uz":"Pixel Art","ru":"Пиксель-арт","id":"Pixel Art","lt":"Pikselių menas","esmx":"Pixel Art","eses":"Pixel Art","it":"Pixel Art","zhcn":"像素风","bn":"পিক্সেল আর্ট","hi":"पिक्सेल आर्ट","ptbr":"Pixel Art","ar":"فن بيكسل","uk":"Піксель-арт","vi":"Pixel Art"},
+    "style_watercolor": {"en":"Watercolor","uz":"Akvarel","ru":"Акварель","id":"Cat Air","lt":"Akvarelė","esmx":"Acuarela","eses":"Acuarela","it":"Acquerello","zhcn":"水彩","bn":"ওয়াটারকালার","hi":"वॉटरकलर","ptbr":"Aquarela","ar":"ألوان مائية","uk":"Акварель","vi":"Màu nước"},
+    "style_3d": {"en":"3D Render","uz":"3D Render","ru":"3D-рендер","id":"Render 3D","lt":"3D renderis","esmx":"Render 3D","eses":"Render 3D","it":"Render 3D","zhcn":"3D 渲染","bn":"3D রেন্ডার","hi":"3D रेंडर","ptbr":"Render 3D","ar":"تصيير ثلاثي الأبعاد","uk":"3D-рендер","vi":"Kết xuất 3D"},
+    "style_comic": {"en":"Comic","uz":"Komiks","ru":"Комикс","id":"Komik","lt":"Komiksas","esmx":"Cómic","eses":"Cómic","it":"Fumetto","zhcn":"漫画风","bn":"কমিক","hi":"कॉमिक","ptbr":"Quadrinhos","ar":"قصص مصورة","uk":"Комікс","vi":"Truyện tranh"},
+    "style_lowpoly": {"en":"Low Poly","uz":"Low Poly","ru":"Лоу-поли","id":"Low Poly","lt":"Low poly","esmx":"Low Poly","eses":"Low Poly","it":"Low Poly","zhcn":"低多边形","bn":"লো-পলি","hi":"लो-पॉली","ptbr":"Low Poly","ar":"منخفض المضلعات","uk":"Low poly","vi":"Low Poly"},
+    "style_neon": {"en":"Neon Cyberpunk","uz":"Neon Cyberpunk","ru":"Неон киберпанк","id":"Neon Cyberpunk","lt":"Neon Cyberpunk","esmx":"Neón Cyberpunk","eses":"Neón Cyberpunk","it":"Neon Cyberpunk","zhcn":"霓虹赛博朋克","bn":"নিয়ন সাইবারপাঙ্ক","hi":"नियोन साइबरपंक","ptbr":"Neon Cyberpunk","ar":"نيون سايبربانك","uk":"Неон кіберпанк","vi":"Neon Cyberpunk"},
+    "style_sketch": {"en":"Sketch","uz":"Eskiz","ru":"Скетч","id":"Sketsa","lt":"Eskizas","esmx":"Boceto","eses":"Boceto","it":"Schizzo","zhcn":"素描","bn":"স্কেচ","hi":"स्केच","ptbr":"Esboço","ar":"رسم تخطيطي","uk":"Ескіз","vi":"Phác thảo"},
+    "style_retro": {"en":"Retro 80s","uz":"Retro 80s","ru":"Ретро 80-е","id":"Retro 80-an","lt":"Retro 80","esmx":"Retro 80s","eses":"Retro 80s","it":"Retrò Anni '80","zhcn":"复古80年代","bn":"রেট্রো ৮০s","hi":"रेट्रो 80s","ptbr":"Retrô 80s","ar":"ريترو الثمانينات","uk":"Ретро 80-ті","vi":"Retro 80s"},
+}
+
+def _patch_lang_copy():
+    # Soft copy + keys
+    soft_en = {
+        "premium_desc": (
+            "Premium makes image generation **faster** and **more powerful** 🔥\n\n"
+            "✅ 🔞 Adult/NSFW unlocked 🍓\n"
+            "✅ ⚡ Priority queue (skip the line)\n"
+            "✅ 🖼 4 images in one request\n"
+            "✅ 🚫 No cooldown\n\n"
+            "Free is still nice 🙂 (1 image/request, cooldown, daily limit, NSFW blocked)"
+        ),
+        "premium_title": "⭐ Premium (Unlock Mode)",
+        "queued": "🕒 Queued! Estimated wait ~{sec}s.",
+        "processing": "🔄 Working on it…",
+        "already_processing": "⏳ You already have a request in progress. I’ll finish it first 🙂",
+        "cooldown_friendly": "⏳ Please wait {sec}s before the next free request.\n⭐ Premium has no cooldown.",
+        "quota_reached_friendly": "⏳ You’ve used your free quota for today.\n\nWant more? ⭐ Premium gives unlimited + priority ⚡",
+        "nsfw_blocked_free": "🔞 Adult content is available only for ⭐ Premium.\n\nUpgrade to unlock 🔞🍓 + 4 images/batch + priority ⚡",
+        "error_occurred": "⚠️ Something went wrong. Please try again in a moment 🙂",
+        "back_to_main_button": "⬅️ Back",
+        "profile_button": "👤 Profile",
+        "style_button": "🎛 Image Style",
+        "image_style_title": "🎛 Image Style",
+        "image_style_desc": "Pick a style — it will be applied to your next images ✨",
+        "style_saved": "✅ Style saved: {style}",
+        "image_ready_title": "🎨 Image ready!",
+        "profile_title": "👤 Your Profile",
+        "profile_premium_active": "✅ Active until: {until}",
+        "profile_premium_inactive": "❌ Not active",
+        "profile_paid_left": "💎 Paid images left: {n}",
+        "profile_stats": (
+            "🆔 ID: {id}\n"
+            "👤 Username: {uname}\n"
+            "🌐 Language: {lang}\n"
+            "🎛 Style: {style}\n"
+            "⭐ Premium: {premium}\n\n"
+            "📆 Free today: {free_used}/{free_limit}\n"
+            "🖼 Total images: {total_images}\n"
+            "🎨 Total requests: {total_requests}\n"
+            "⭐ Premium images: {premium_images}\n"
+        ),
+    }
+    soft_uz = {
+        "premium_desc": (
+            "Premium sizni *tezroq* va *kuchliroq* qiladi 🔥\n\n"
+            "✅ 🔞 Adult/NSFW ochiladi 🍓\n"
+            "✅ ⚡ Prioritet navbat (tezroq)\n"
+            "✅ 🖼 1 so‘rovda 4 ta rasm\n"
+            "✅ 🚫 Cooldown yo‘q\n\n"
+            "Free ham chiroyli 🙂 (1 rasm/so‘rov, cooldown, kunlik limit, NSFW yopiq)"
+        ),
+        "premium_title": "⭐ Premium (Unlock)",
+        "queued": "🕒 Navbatga qo‘shildi! Taxminiy kutish ~{sec}s.",
+        "processing": "🔄 Tayyorlayapman…",
+        "already_processing": "⏳ Sizda aktiv so‘rov bor. Avval shuni tugatay 🙂",
+        "cooldown_friendly": "⏳ Keyingi bepul so‘rov uchun {sec}s kuting.\n⭐ Premiumda cooldown yo‘q.",
+        "quota_reached_friendly": "⏳ Bugungi bepul limit tugadi.\n\nKo‘proq kerakmi? ⭐ Premium — cheksiz + prioritet ⚡",
+        "nsfw_blocked_free": "🔞 Adult/NSFW faqat ⭐ Premium’da.\n\nPremium olsangiz 🔞🍓 + 4 rasm/batch + prioritet ⚡🖼",
+        "error_occurred": "⚠️ Xatolik bo‘ldi. Birozdan so‘ng qayta urinib ko‘ring 🙂",
+        "back_to_main_button": "⬅️ Orqaga",
+        "profile_button": "👤 Profil",
+        "style_button": "🎛 Image Style",
+        "image_style_title": "🎛 Image Style",
+        "image_style_desc": "Stil tanlang — keyingi rasmlarga shu stil qo‘llanadi ✨",
+        "style_saved": "✅ Style saqlandi: {style}",
+        "image_ready_title": "🎨 Rasm tayyor!",
+        "profile_title": "👤 Profil",
+        "profile_premium_active": "✅ Amal qiladi: {until}",
+        "profile_premium_inactive": "❌ Aktiv emas",
+        "profile_paid_left": "💎 Pullik rasmlar qoldi: {n}",
+        "profile_stats": (
+            "🆔 ID: {id}\n"
+            "👤 Username: {uname}\n"
+            "🌐 Til: {lang}\n"
+            "🎛 Style: {style}\n"
+            "⭐ Premium: {premium}\n\n"
+            "📆 Bugun Free: {free_used}/{free_limit}\n"
+            "🖼 Jami rasmlar: {total_images}\n"
+            "🎨 Jami so‘rovlar: {total_requests}\n"
+            "⭐ Premium rasmlar: {premium_images}\n"
+        ),
+    }
+    LANGUAGES.setdefault("en", {}).update(soft_en)
+    LANGUAGES.setdefault("uz", {}).update(soft_uz)
+
+    # Ensure style keys exist in ALL languages dictionaries (requested)
+    for code, d in LANGUAGES.items():
+        d.setdefault("profile_button", "👤 Profile")
+        d.setdefault("style_button", "🎛 Image Style")
+        d.setdefault("image_style_title", "🎛 Image Style")
+        d.setdefault("image_style_desc", "Pick a style")
+        d.setdefault("style_saved", "✅ Saved: {style}")
+        d.setdefault("image_ready_title", "🎨 Image ready!")
+        # style option names
+        for sk in STYLE_KEYS:
+            key = f"style_name_{sk}"
+            d[key] = _STYLE_NAMES.get(sk, {}).get(code) or _STYLE_NAMES.get(sk, {}).get("en") or sk
+
+_patch_lang_copy()
+
+# --- Extend migrations: add style_key + premium stats ---
+try:
+    MAJOR_MIGRATIONS_SQL = MAJOR_MIGRATIONS_SQL + """
+ALTER TABLE users ADD COLUMN IF NOT EXISTS style_key TEXT DEFAULT 'style_default';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_requests INT DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_images INT DEFAULT 0;
+"""
+except Exception:
+    pass
+
+# --- Adult triggers expansion (requested). Keep explicit-only; no curse words. ---
+try:
+    DEFAULT_NSFW_TRIGGERS.setdefault("en", []).extend([
+        r"\bsexy\b", r"\bstrip\b", r"\bmilf\b", r"\bhandjob\b", r"\bdeepthroat\b", r"\borgy\b", r"\bthreesome\b",
+        r"\bcock\b", r"\bdick\b", r"\bboob\b", r"\bbreast\b", r"\bbutt\b",
+        r"🔞", r"🍓",
+    ])
+    DEFAULT_NSFW_TRIGGERS.setdefault("uz", []).extend([r"🔞", r"🍓", r"\berotik\b"])
+    DEFAULT_NSFW_TRIGGERS.setdefault("ru", []).extend([r"🔞", r"🍓"])
+except Exception:
+    pass
+
+
+
+# Expanded NSFW keyword bank (line-by-line for easy editing / audits)
+# NOTE: Keep explicit sexual terms only (avoid normal swear words to prevent false positives).
+_EXTRA_NSFW_EN = [
+    r"\bexplicit\b",
+    r"\berotic\b",
+    r"\bporn\b",
+    r"\bnsfw\b",
+    r"\bnude\b",
+    r"\bnaked\b",
+    r"\bsex\b",
+    r"\bsexual\b",
+    r"\bsexy\b",
+    r"\bstrip(tease)?\b",
+    r"\bboobs?\b",
+    r"\bbreasts?\b",
+    r"\bnipples?\b",
+    r"\bass\b",
+    r"\bbutt\b",
+    r"\bpussy\b",
+    r"\bvagina\b",
+    r"\bclit\b",
+    r"\bpenis\b",
+    r"\bdick\b",
+    r"\bcock\b",
+    r"\bblowjob\b",
+    r"\bhandjob\b",
+    r"\bdeepthroat\b",
+    r"\bpenetrat(ion|e|ing)\b",
+    r"\bfuck\b",
+    r"\bfucking\b",
+    r"\borgasm\b",
+    r"\bcreampie\b",
+    r"\bthreesome\b",
+    r"\borgy\b",
+    r"\bbdsm\b",
+    r"\bdominatrix\b",
+    r"\bsubmissive\b",
+    r"\bfetish\b",
+    r"\blingerie\b",
+    r"\bcosplay\s+sex\b",
+    r"\badult\s+content\b",
+    r"\bexplicit\s+content\b",
+    r"🔞",
+    r"🍓",
+]
+_EXTRA_NSFW_RU = [
+    r"\bпорно\b",
+    r"\bэрот",
+    r"\bсекс\b",
+    r"\bобнажен",
+    r"\bголая\b",
+    r"\bгрудь\b",
+    r"\bсиськ",
+    r"\bсосок\b",
+    r"\bжоп",
+    r"\bвагин",
+    r"\bпенис\b",
+    r"\bоральн",
+    r"\bминет\b",
+    r"\bанальн",
+    r"\bбдсм\b",
+    r"🔞",
+    r"🍓",
+]
+_EXTRA_NSFW_UZ = [
+    r"\bporno\b",
+    r"\bseks\b",
+    r"\bjinsiy\b",
+    r"\berotik\b",
+    r"\byalang'och\b",
+    r"\byalangoch\b",
+    r"\bko'krak\b",
+    r"\bkokrak\b",
+    r"\bsosok\b",
+    r"\bqov\b",
+    r"\bvagina\b",
+    r"\bpenis\b",
+    r"\bminet\b",
+    r"\banal\b",
+    r"\bbdsm\b",
+    r"🔞",
+    r"🍓",
+]
+
+try:
+    DEFAULT_NSFW_TRIGGERS.setdefault("en", []).extend(_EXTRA_NSFW_EN)
+    DEFAULT_NSFW_TRIGGERS.setdefault("ru", []).extend(_EXTRA_NSFW_RU)
+    DEFAULT_NSFW_TRIGGERS.setdefault("uz", []).extend(_EXTRA_NSFW_UZ)
+except Exception:
+    pass
+
+# --- Helpers: safe caption & safe media group ---
+_CAPTION_MAX = 1024
+_TEXT_MAX = 4096
+
+def _clip(s: str, n: int) -> str:
+    s = s or ""
+    if len(s) <= n:
+        return s
+    return s[: max(0, n - 1)] + "…"
+
+async def _safe_send_media_group(bot, chat_id: int, media: list):
+    try:
+        return await bot.send_media_group(chat_id=chat_id, media=media, write_timeout=250, read_timeout=250, connect_timeout=250)
+    except BadRequest as e:
+        if "caption is too long" in str(e).lower():
+            # retry without captions
+            stripped = []
+            for m in media:
+                try:
+                    stripped.append(InputMediaPhoto(media=m.media))
+                except Exception:
+                    stripped.append(m)
+            await bot.send_media_group(chat_id=chat_id, media=stripped, write_timeout=250, read_timeout=250, connect_timeout=250)
+            # send caption separately if existed
+            cap = ""
+            try:
+                cap = media[0].caption or ""
+            except Exception:
+                cap = ""
+            if cap:
+                await bot.send_message(chat_id=chat_id, text=_clip(cap, _TEXT_MAX))
+            return None
+        raise
+
+async def _safe_send_photo(bot, chat_id: int, photo, caption: str):
+    caption = _clip(caption or "", _CAPTION_MAX)
+    try:
+        return await bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+    except BadRequest as e:
+        if "caption is too long" in str(e).lower():
+            await bot.send_photo(chat_id=chat_id, photo=photo)
+            if caption:
+                await bot.send_message(chat_id=chat_id, text=_clip(caption, _TEXT_MAX))
+            return None
+        raise
+
+# --- Safety block: keep minors/non-consensual, but DO NOT call it "illegal" in UX ---
+_SAFETY_BLOCK_PATTERNS = []
+try:
+    # reuse existing patterns if present
+    _SAFETY_BLOCK_PATTERNS = list(set(_ILLEGAL_MINOR_PATTERNS + _ILLEGAL_SEXUAL_VIOLENCE))
+except Exception:
+    _SAFETY_BLOCK_PATTERNS = [
+        r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
+        r"\brape\b", r"\bincest\b", r"\bbestiality\b",
+    ]
+
+def _contains_safety(prompt: str) -> bool:
+    p = _normalize_prompt(prompt)
+    for pat in _SAFETY_BLOCK_PATTERNS:
+        try:
+            if re.search(pat, p, flags=re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+# --- Style DB helpers ---
+async def _get_style_key(pool, user_id: int) -> str:
+    try:
+        async with pool.acquire() as conn:
+            v = await conn.fetchval("SELECT style_key FROM users WHERE id=$1", user_id)
+            return v or "style_default"
+    except Exception:
+        return "style_default"
+
+async def _set_style_key(pool, user_id: int, style_key: str):
+    style_key = style_key if style_key in STYLE_KEYS else "style_default"
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET style_key=$2 WHERE id=$1", user_id, style_key)
+
+def _style_label(lang: dict, style_key: str) -> str:
+    key = f"style_name_{style_key}"
+    return lang.get(key) or _STYLE_NAMES.get(style_key, {}).get("en") or style_key
+
+# --- Menu keyboard (soft UI) ---
+def _main_menu_kb(lang: dict, user_id: int) -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton(lang["gen_button"], callback_data="start_gen"),
+         InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+        [InlineKeyboardButton(t(lang, "profile_button"), callback_data="profile_menu"),
+         InlineKeyboardButton(t(lang, "style_button"), callback_data="image_style_menu")],
+        [InlineKeyboardButton(lang["ai_button"], callback_data="start_ai_flow"),
+         InlineKeyboardButton(lang["lang_button"], callback_data="change_language")],
+        [InlineKeyboardButton(lang["donate_button"], callback_data="donate_custom"),
+         InlineKeyboardButton("🎨 Random AI Anime", callback_data="random_anime")],
+        [InlineKeyboardButton("🧪 FakeLab", callback_data="fake_lab_new"),
+         InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats")],
+    ]
+    if user_id == ADMIN_ID:
+        kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(kb)
+
+# --- Override: start_handler (remove premium/credits lines, show lang + profile + style) ---
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    pool = context.application.bot_data["db_pool"]
+    await add_user_db(pool, user)
+
+    row = await get_user_row(pool, user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    # force sub for private
+    if not await force_sub_if_private(update, context, lang_code=lang_code):
+        return
+
+    text = f"{lang['welcome']}\n\n{lang.get('choose_action_prompt','Choose an action:')}"
+    rm = _main_menu_kb(lang, user.id)
+    if update.callback_query:
+        await update.callback_query.answer()
+        try:
+            await update.callback_query.edit_message_text(text=text, reply_markup=rm)
+        except Exception:
+            await update.effective_chat.send_message(text, reply_markup=rm)
+    else:
+        await update.message.reply_text(text, reply_markup=rm)
+
+# --- Override: language_select_handler to return new soft menu ---
+async def language_select_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    lang_code = q.data.split("_", 1)[1]
+    user = q.from_user
+
+    await add_user_db(context.application.bot_data["db_pool"], user, lang_code)
+
+    lang = get_lang(lang_code)
+    text = lang["lang_changed"].format(lang=lang["name"])
+    await q.edit_message_text(text=text, reply_markup=_main_menu_kb(lang, user.id))
+
+# --- Override: check_sub_button_handler to go back to menu on success ---
+async def check_sub_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = q.from_user.id
+    pool = context.application.bot_data["db_pool"]
+    row = await get_user_row(pool, user_id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    if await check_subscription(user_id, context):
+        # show menu
+        text = f"{lang['sub_thanks']}\n\n{lang.get('choose_action_prompt','Choose:')}"
+        await q.edit_message_text(text, reply_markup=_main_menu_kb(lang, user_id))
+    else:
+        kb = []
+        for channel in MANDATORY_CHANNELS:
+            kb.append([InlineKeyboardButton(
+                f"{lang['sub_url_text']} {channel['username']}",
+                url=f"https://t.me/{channel['username'].strip('@')}"
+            )])
+        kb.append([InlineKeyboardButton(lang["sub_check"], callback_data="check_sub")])
+        await q.edit_message_text(lang["sub_still_not"], reply_markup=InlineKeyboardMarkup(kb))
+
+# --- Image Style UI ---
+async def image_style_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    row = await get_user_row(pool, q.from_user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    current = await _get_style_key(pool, q.from_user.id)
+    rows = []
+    buf = []
+    for sk in STYLE_KEYS:
+        label = _style_label(lang, sk)
+        if sk == current:
+            label = "✅ " + label
+        buf.append(InlineKeyboardButton(label, callback_data=f"set_style_{sk}"))
+        if len(buf) == 2:
+            rows.append(buf); buf=[]
+    if buf:
+        rows.append(buf)
+    rows.append([InlineKeyboardButton(t(lang,"back_to_main_button"), callback_data="back_to_main")])
+
+    text = f"{t(lang,'image_style_title')}\n\n{t(lang,'image_style_desc')}"
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
+
+async def set_style_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    style_key = q.data.replace("set_style_", "").strip()
+    pool = context.application.bot_data["db_pool"]
+    row = await get_user_row(pool, q.from_user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    await _set_style_key(pool, q.from_user.id, style_key)
+    await q.answer(t(lang, "style_saved", style=_style_label(lang, style_key)), show_alert=False)
+    # reopen menu
+    await image_style_menu_handler(update, context)
+
+# --- Profile UI ---
+async def profile_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    row = await get_user_row(pool, q.from_user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    # stats
+    free_used = await _count_free_used_today(pool, q.from_user.id)
+    total_images = int((row["total_images"] if row else 0) or 0)
+    total_requests = int((row["total_requests"] if row else 0) or 0)
+
+    # premium stats (from users columns if available, else compute)
+    premium_images = 0
+    try:
+        premium_images = int((row["premium_images"] if row else 0) or 0)
+    except Exception:
+        try:
+            async with pool.acquire() as conn:
+                premium_images = int(await conn.fetchval("SELECT COALESCE(SUM(image_count),0) FROM generations WHERE user_id=$1 AND is_premium=TRUE", q.from_user.id) or 0)
+        except Exception:
+            premium_images = 0
+
+    is_prem = _is_premium_row(row)
+    premium_line = t(lang, "profile_premium_inactive")
+    if is_prem and row and row.get("subscription_expire"):
+        premium_line = t(lang, "profile_premium_active", until=_fmt_dt(row["subscription_expire"]))
+
+    style_key = await _get_style_key(pool, q.from_user.id)
+    style_name = _style_label(lang, style_key)
+
+    uname = f"@{q.from_user.username}" if q.from_user.username else "—"
+    text = f"{t(lang,'profile_title')}\n\n" + t(
+        lang, "profile_stats",
+        id=q.from_user.id,
+        uname=uname,
+        lang=f"{lang.get('flag','')} {lang.get('name',lang_code)}",
+        style=style_name,
+        premium=premium_line,
+        free_used=free_used,
+        free_limit=FREE_DAILY_REQUESTS,
+        total_images=total_images,
+        total_requests=total_requests,
+        premium_images=premium_images
+    )
+
+    # Paid pack images left (show only if NOT premium, and never call it "extra credits")
+    try:
+        paid_left = int((row["extra_credits"] if row else 0) or 0)
+    except Exception:
+        paid_left = 0
+    if (not is_prem) and paid_left > 0:
+        text += "\n" + t(lang, "profile_paid_left", n=paid_left)
+
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,"back_to_main_button"), callback_data="back_to_main")]])
+    await q.edit_message_text(text[:4096], reply_markup=kb)
+
+# --- Premium buttons in ONE ROW (requested) ---
+def premium_keyboard(lang: dict, include_back: bool = True) -> InlineKeyboardMarkup:
+    kb = [[
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} — {PREMIUM_24H_PRICE_STARS} ⭐", callback_data="premium_buy_24h"),
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} — {PREMIUM_7D_PRICE_STARS} ⭐", callback_data="premium_buy_7d"),
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} — {PREMIUM_30D_PRICE_STARS} ⭐", callback_data="premium_buy_30d"),
+    ]]
+    if include_back:
+        kb.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
+    return InlineKeyboardMarkup(kb)
+
+# --- Apply Style addon inside digen_generate_urls by wrapping (keeps legacy) ---
+_digen_generate_urls_original = digen_generate_urls
+
+async def digen_generate_urls(pool, user_id: int, prompt: str, translated: str, count: int):
+    # call original to keep lora logic, but we patch final prompt by temporarily adding style into translated
+    style_key = await _get_style_key(pool, user_id)
+    add = STYLE_PROMPT_ADDONS.get(style_key, "")
+    if add:
+        translated2 = f"{translated}, {add}"
+    else:
+        translated2 = translated
+    return await _digen_generate_urls_original(pool, user_id, prompt, translated2, count)
+
+# --- Override: log_generation to increment premium counters ---
+_log_generation_original = log_generation
+async def log_generation(pool, tg_user, prompt: str, translated: str, image_id: str, count: int, is_premium: bool, nsfw_flag: bool):
+    await _log_generation_original(pool, tg_user, prompt, translated, image_id, count, is_premium, nsfw_flag)
+    if is_premium:
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE users SET premium_requests = COALESCE(premium_requests,0)+1, premium_images = COALESCE(premium_images,0)+$1 WHERE id=$2",
+                    count, tg_user.id
+                )
+        except Exception:
+            pass
+
+# --- Override: process_job (caption format + caption-too-long safe + admin album notify) ---
+async def process_job(app: Application, job: GenerationJob):
+    pool = app.bot_data["db_pool"]
+    lang = get_lang(job.lang_code)
+    bot = app.bot
+
+    await _send_or_edit(bot, job.chat_id, job.status_message_id, t(lang, "processing"))
+
+    try:
+        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, job.translated_prompt, job.count)
+
+        # Model title
+        model_title = "Default Mode"
+        if lora_id:
+            m = next((m for m in DIGEN_MODELS if m["id"] == lora_id), None)
+            if m:
+                model_title = m["title"]
+
+        # Caption in requested format (no extra status lines)
+        prompt_short = _clip(job.prompt.replace("\n", " "), 180)
+        caption = (
+            f"{t(lang,'image_ready_title')}\n"
+            f"{lang.get('image_prompt_label','📝 Prompt:')} {prompt_short}\n"
+            f"{lang.get('image_model_label','🖼 Model:')} {model_title}\n"
+            f"{lang.get('image_count_label','🔢 Count:')} {job.count}\n"
+            f"{lang.get('image_time_label','⏰ Time (UTC+5):')} {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        caption = _clip(caption, _CAPTION_MAX)
+
+        # Send images (safe)
+        if not job.is_premium:
+            first_url = urls[0]
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
+                    async with s.get(first_url, allow_redirects=True) as r:
+                        img_bytes = await r.read()
+                wm_bytes = await _apply_watermark_bytes(img_bytes, WATERMARK_TEXT)
+                from io import BytesIO
+                bio = BytesIO(wm_bytes)
+                bio.name = "digen.jpg"
+                await _safe_send_photo(bot, job.chat_id, bio, caption)
+            except Exception:
+                await _safe_send_photo(bot, job.chat_id, first_url, caption)
+                # if PIL not present, watermark text separately (not inside caption)
+                if not _PIL_OK:
+                    try:
+                        await bot.send_message(job.chat_id, text=WATERMARK_TEXT)
+                    except Exception:
+                        pass
+        else:
+            media = []
+            for i, url in enumerate(urls):
+                media.append(InputMediaPhoto(media=url, caption=(caption if i == 0 else "")))
+            await _safe_send_media_group(bot, job.chat_id, media)
+
+        # If prompt is huge, send it as separate message (soft, not error)
+        if len(job.prompt) > 220:
+            try:
+                await bot.send_message(job.chat_id, text=_clip(f"📝 Prompt (full):\n{job.prompt}", _TEXT_MAX))
+            except Exception:
+                pass
+
+        await log_generation(pool, job.user, job.prompt, job.translated_prompt, image_id, job.count, job.is_premium, job.nsfw_flag)
+        await _mark_request(pool, job.request_id, "done")
+
+        # Admin notify (requested format + images together)
+        if ADMIN_ID:
+            try:
+                user_display = f"@{job.user.username}" if job.user.username else "—"
+                admin_cap = (
+                    "🎨 Yangi generatsiya!\n\n"
+                    f"👤 Foydalanuvchi: {user_display} (ID: {job.user.id})\n"
+                    f"📝 Prompt: {_clip(job.prompt.replace(chr(10),' '), 700)}\n"
+                    f"🔢 Soni: {job.count}\n"
+                    f"🆔 Image ID: {image_id}\n"
+                    f"⏰ Vaqt (UTC+5): {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                admin_cap = _clip(admin_cap, _CAPTION_MAX)
+                admin_media = []
+                for i, url in enumerate(urls[:10]):
+                    admin_media.append(InputMediaPhoto(media=url, caption=(admin_cap if i == 0 else "")))
+                await _safe_send_media_group(bot, ADMIN_ID, admin_media)
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.exception(f"[JOB ERROR] {e}")
+        await _refund_credits(pool, job.user.id, job.paid_credits_used)
+        await _mark_request(pool, job.request_id, "error", error=str(e)[:500])
+        try:
+            await bot.send_message(chat_id=job.chat_id, text=t(lang, "error_occurred"))
+        except Exception:
+            pass
+        if ADMIN_ID:
+            try:
+                await bot.send_message(ADMIN_ID, f"❌ Job error\nuser={job.user.id}\n{str(e)[:900]}")
+            except Exception:
+                pass
+
+# --- Override: generate_cb (remove "illegal" label; keep safety block) ---
+async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    app = context.application
+    pool = app.bot_data["db_pool"]
+
+    await add_user_db(pool, q.from_user)
+    row = await get_user_row(pool, q.from_user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    if not await force_sub_if_private(update, context, lang_code=lang_code):
+        return
+
+    try:
+        req_count = int(q.data.split("_")[1])
+    except Exception:
+        await q.edit_message_text(t(lang, "error_occurred"))
+        return
+
+    prompt = context.user_data.get("prompt", "") or ""
+    translated = context.user_data.get("translated", prompt) or prompt
+
+    is_premium = _is_premium_row(row)
+
+    if not is_premium and req_count != 1:
+        kb = [
+            [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
+        ]
+        await q.edit_message_text(t(lang, "batch_premium_only") + "\n\n" + t(lang, "premium_desc"), reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    count = min(req_count, PREMIUM_IMAGE_COUNT) if is_premium else 1
+
+    # Safety block (no "illegal" wording)
+    if _contains_safety(prompt):
+        await log_event(pool, q.from_user.id, "blocked_safety", {"prompt": prompt[:500]})
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(ADMIN_ID, f"🚫 SAFETY BLOCK\nuser={q.from_user.id}\n{prompt[:700]}")
+            except Exception:
+                pass
+        await q.edit_message_text(lang.get("error_occurred", "⚠️ Sorry — I can’t help with that request."))
+        return
+
+    triggers = app.bot_data.get("nsfw_triggers") or {}
+    nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
+    if nsfw_flag and not is_premium:
+        kb = [
+            [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
+        ]
+        await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=InlineKeyboardMarkup(kb))
+        await log_event(pool, q.from_user.id, "blocked_nsfw_free", {"prompt": prompt[:500]})
+        return
+
+    active: set = app.bot_data["active_users"]
+    if q.from_user.id in active:
+        await q.edit_message_text(t(lang, "already_processing"))
+        return
+
+    gen_q: asyncio.PriorityQueue = app.bot_data["gen_queue"]
+    if not is_premium and gen_q.qsize() >= STANDARD_QUEUE_HARD_LIMIT:
+        await q.edit_message_text(t(lang, "high_load"))
+        return
+
+    paid_credits_used = 0
+    if not is_premium:
+        ok, info = await _consume_free_or_paid(pool, q.from_user.id)
+        if not ok:
+            if info.get("reason") == "banned":
+                await q.edit_message_text("⛔ Sizning akkauntingiz ban qilingan.")
+                return
+            if info.get("reason") == "cooldown":
+                await q.edit_message_text(t(lang, "cooldown_friendly", sec=int(info.get("sec", 0))))
+                return
+            if info.get("reason") == "quota":
+                msg = t(lang, "quota_reached_friendly") + "\n\n" + t(lang, "premium_desc")
+                kb = [
+                    [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+                    [InlineKeyboardButton(f"💎 +{EXTRA_PACK_SIZE} — {EXTRA_PACK_PRICE_STARS} ⭐", callback_data=f"buy_pack_{EXTRA_PACK_SIZE}")],
+                    [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")],
+                ]
+                await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+                return
+        paid_credits_used = int(info.get("paid_credits_used") or 0)
+
+    request_id = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO requests(id, user_id, prompt_text, image_count, is_premium, nsfw_flag, status) "
+            "VALUES($1,$2,$3,$4,$5,$6,'queued')",
+            request_id, q.from_user.id, prompt, count, bool(is_premium), bool(nsfw_flag)
+        )
+
+    active.add(q.from_user.id)
+    wait_sec = _estimate_wait_seconds(app)
+    status_msg = await q.message.reply_text(t(lang, "queued", sec=wait_sec))
+    job = GenerationJob(
+        request_id=request_id,
+        user=q.from_user,
+        chat_id=q.message.chat_id,
+        prompt=prompt,
+        translated_prompt=translated,
+        count=count,
+        lang_code=lang_code,
+        is_premium=is_premium,
+        nsfw_flag=bool(nsfw_flag),
+        paid_credits_used=paid_credits_used,
+        status_message_id=status_msg.message_id if status_msg else None,
+    )
+    await enqueue_generation(app, job)
+
+# --- Inline mode (requested): @Bot prompt in any chat ---
+async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = (update.inline_query.query or "").strip()
+    bot_username = context.bot.username or "DigenAI_bot"
+
+    if not query:
+        await update.inline_query.answer(
+            results=[],
+            is_personal=True,
+            cache_time=1,
+            switch_pm_text=f"Type: @{bot_username} your prompt",
+            switch_pm_parameter="start",
+        )
+        return
+
+    rid = str(uuid.uuid4())
+    title = f"🎨 Generate: {_clip(query, 40)}"
+    desc = "Tap to generate (limits apply)"
+    content = InputTextMessageContent("🔄 Processing your request…", disable_web_page_preview=True)
+    result = InlineQueryResultArticle(id=rid, title=title, description=desc, input_message_content=content)
+
+    await update.inline_query.answer(
+        results=[result],
+        is_personal=True,
+        cache_time=1,
+        switch_pm_text="Open bot for Premium / Style / Profile",
+        switch_pm_parameter="start",
+    )
+
+async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chosen = update.chosen_inline_result
+    user = chosen.from_user
+    prompt = (chosen.query or "").strip()
+    inline_message_id = chosen.inline_message_id
+    if not prompt or not inline_message_id:
+        return
+
+    pool = context.application.bot_data["db_pool"]
+    await add_user_db(pool, user)
+    row = await get_user_row(pool, user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    # Sub check: can't show buttons in that chat, so tell user to open bot
+    if not await check_subscription(user.id, context):
+        try:
+            await context.bot.edit_message_text(inline_message_id=inline_message_id, text="🔒 Please open the bot, subscribe to the channel, then try again.")
+        except Exception:
+            pass
+        return
+
+    is_premium = _is_premium_row(row)
+
+    # Inline limitation: always 1 image
+    count = 1
+
+    if _contains_safety(prompt):
+        try:
+            await context.bot.edit_message_text(inline_message_id=inline_message_id, text=t(lang, "error_occurred"))
+        except Exception:
+            pass
+        return
+
+    triggers = context.application.bot_data.get("nsfw_triggers") or {}
+    nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
+    if nsfw_flag and not is_premium:
+        try:
+            await context.bot.edit_message_text(inline_message_id=inline_message_id, text=t(lang, "nsfw_blocked_free"))
+        except Exception:
+            pass
+        return
+
+    active: set = context.application.bot_data["active_users"]
+    if user.id in active:
+        try:
+            await context.bot.edit_message_text(inline_message_id=inline_message_id, text=t(lang, "already_processing"))
+        except Exception:
+            pass
+        return
+
+    if not is_premium:
+        ok, info = await _consume_free_or_paid(pool, user.id)
+        if not ok:
+            msg = t(lang, "quota_reached_friendly")
+            if info.get("reason") == "cooldown":
+                msg = t(lang, "cooldown_friendly", sec=int(info.get("sec", 0)))
+            try:
+                await context.bot.edit_message_text(inline_message_id=inline_message_id, text=msg)
+            except Exception:
+                pass
+            return
+
+    request_id = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO requests(id, user_id, prompt_text, image_count, is_premium, nsfw_flag, status) "
+            "VALUES($1,$2,$3,$4,$5,$6,'queued')",
+            request_id, user.id, prompt, count, bool(is_premium), bool(nsfw_flag)
+        )
+
+    active.add(user.id)
+
+    # create lightweight job that delivers via edit_message_media (1 image)
+    # We reuse GenerationJob but store chat_id as ADMIN_ID placeholder is not needed; use 0 and handle inside try.
+    job = GenerationJob(
+        request_id=request_id,
+        user=user,
+        chat_id=user.id,  # not used for inline delivery
+        prompt=prompt,
+        translated_prompt=prompt,
+        count=count,
+        lang_code=lang_code,
+        is_premium=is_premium,
+        nsfw_flag=bool(nsfw_flag),
+        paid_credits_used=0,
+        status_message_id=None,
+    )
+    # Monkey patch inline delivery onto job
+    setattr(job, "inline_message_id", inline_message_id)
+
+    # enqueue with priority
+    await context.application.bot_data["gen_queue"].put((0 if is_premium else 1, next(context.application.bot_data["queue_seq"]), job))
+
+    # edit status
+    try:
+        await context.bot.edit_message_text(inline_message_id=inline_message_id, text=t(lang, "processing"))
+    except Exception:
+        pass
+
+# Patch process_job to deliver inline if inline_message_id exists (1 photo)
+_process_job_for_inline_original = process_job
+async def process_job(app: Application, job: GenerationJob):
+    inline_mid = getattr(job, "inline_message_id", None)
+    if not inline_mid:
+        return await _process_job_for_inline_original(app, job)
+
+    pool = app.bot_data["db_pool"]
+    lang = get_lang(job.lang_code)
+    bot = app.bot
+    try:
+        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, job.translated_prompt, 1)
+        model_title = "Default Mode"
+        if lora_id:
+            m = next((m for m in DIGEN_MODELS if m["id"] == lora_id), None)
+            if m:
+                model_title = m["title"]
+
+        prompt_short = _clip(job.prompt.replace("\n", " "), 180)
+        caption = (
+            f"{t(lang,'image_ready_title')}\n"
+            f"{lang.get('image_prompt_label','📝 Prompt:')} {prompt_short}\n"
+            f"{lang.get('image_model_label','🖼 Model:')} {model_title}\n"
+            f"{lang.get('image_count_label','🔢 Count:')} 1\n"
+            f"{lang.get('image_time_label','⏰ Time (UTC+5):')} {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        caption = _clip(caption, _CAPTION_MAX)
+
+        try:
+            media = InputMediaPhoto(media=urls[0], caption=caption)
+            await bot.edit_message_media(inline_message_id=inline_mid, media=media)
+        except Exception:
+            try:
+                await bot.edit_message_text(inline_message_id=inline_mid, text="🎨 Done ✅")
+            except Exception:
+                pass
+
+        await log_generation(pool, job.user, job.prompt, job.translated_prompt, image_id, 1, job.is_premium, job.nsfw_flag)
+        await _mark_request(pool, job.request_id, "done")
+        if ADMIN_ID:
+            try:
+                user_display = f"@{job.user.username}" if job.user.username else "—"
+                admin_cap = (
+                    "🎨 Yangi generatsiya!\n\n"
+                    f"👤 Foydalanuvchi: {user_display} (ID: {job.user.id})\n"
+                    f"📝 Prompt: {_clip(job.prompt.replace(chr(10),' '), 700)}\n"
+                    f"🔢 Soni: 1\n"
+                    f"🆔 Image ID: {image_id}\n"
+                    f"⏰ Vaqt (UTC+5): {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                admin_media = [InputMediaPhoto(media=urls[0], caption=_clip(admin_cap, _CAPTION_MAX))]
+                await _safe_send_media_group(bot, ADMIN_ID, admin_media)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.exception(f"[INLINE JOB ERROR] {e}")
+        try:
+            await bot.edit_message_text(inline_message_id=inline_mid, text=t(lang, "error_occurred"))
+        except Exception:
+            pass
+        await _mark_request(pool, job.request_id, "error", error=str(e)[:500])
+    finally:
+        app.bot_data["active_users"].discard(job.user.id)
+
+# --- Override build_app to include new handlers and remove Settings menu ---
+def build_app():
+    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
+    all_lang_pattern = r"lang_(uz|ru|en|id|lt|esmx|eses|it|zhcn|bn|hi|ptbr|ar|uk|vi)"
+
+    # Admin
+    app.add_handler(CallbackQueryHandler(admin_stats_handler, pattern="^admin_stats$"))
+    app.add_handler(CallbackQueryHandler(admin_panel_handler, pattern="^admin_panel$"))
+    app.add_handler(CallbackQueryHandler(admin_users_list_handler, pattern=r"^admin_users_list_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_user_search_prompt_handler, pattern="^admin_user_search_prompt$"))
+    app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CallbackQueryHandler(admin_ban_unban_menu_handler, pattern="^admin_ban_unban_menu$"))
+    app.add_handler(CallbackQueryHandler(admin_settings_handler, pattern="^admin_settings$"))
+    app.add_handler(CallbackQueryHandler(admin_manage_tokens_handler, pattern="^admin_manage_tokens$"))
+    app.add_handler(CallbackQueryHandler(admin_lang_editor_handler, pattern="^admin_lang_editor$"))
+    app.add_handler(CallbackQueryHandler(admin_export_db_handler, pattern="^admin_export_db$"))
+    app.add_handler(CallbackQueryHandler(admin_refund_menu_handler, pattern="^admin_refund_menu$"))
+    app.add_handler(CallbackQueryHandler(admin_refund_do_handler, pattern=r"^admin_refund_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_user_stats_handler, pattern=r"^admin_user_stats_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_usercard_handler, pattern=r"^admin_usercard_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_ban_inline_handler, pattern=r"^admin_ban_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_unban_inline_handler, pattern=r"^admin_unban_\d+$"))
+    app.add_handler(
+        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_user_search_handler),
+        group=5
+    )
+
+    # Premium
+    app.add_handler(CallbackQueryHandler(premium_menu_handler, pattern="^premium_menu$"))
+    app.add_handler(CallbackQueryHandler(premium_buy_handler, pattern=r"^premium_buy_(24h|7d|30d)$"))
+
+    # Start / Back
+    app.add_handler(CallbackQueryHandler(start_handler, pattern="^back_to_main$"))
+    app.add_handler(CommandHandler("start", start_handler))
+
+    # Inline mode
+    app.add_handler(InlineQueryHandler(inline_query_handler))
+    app.add_handler(ChosenInlineResultHandler(chosen_inline_result_handler))
+
+    # Language
+    app.add_handler(CommandHandler("language", cmd_language))
+    app.add_handler(CallbackQueryHandler(cmd_language, pattern="^change_language$"))
+    app.add_handler(CallbackQueryHandler(language_select_handler, pattern=all_lang_pattern))
+
+    # Profile + Image Style
+    app.add_handler(CallbackQueryHandler(profile_menu_handler, pattern="^profile_menu$"))
+    app.add_handler(CallbackQueryHandler(image_style_menu_handler, pattern="^image_style_menu$"))
+    app.add_handler(CallbackQueryHandler(set_style_handler, pattern=r"^set_style_"))
+
+    # Fun + Stats
+    app.add_handler(CallbackQueryHandler(fake_lab_new_handler, pattern="^fake_lab_new$"))
+    app.add_handler(CallbackQueryHandler(fake_lab_refresh_handler, pattern="^fake_lab_refresh$"))
+    app.add_handler(CallbackQueryHandler(show_stats_handler, pattern="^show_stats$"))
+    app.add_handler(CommandHandler("stats", cmd_public_stats))
+    app.add_handler(CallbackQueryHandler(random_anime_handler, pattern="^random_anime$"))
+    app.add_handler(CallbackQueryHandler(random_anime_refresh_handler, pattern="^random_anime_refresh$"))
+
+    # Donate
+    donate_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(donate_start, pattern="^donate_custom$")],
+        states={DONATE_WAITING_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, donate_amount)]},
+        fallbacks=[],
+        per_message=False
+    )
+    app.add_handler(donate_conv)
+
+    # Admin conversations
+    ban_unban_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(admin_ban_start, pattern="^admin_ban_start$"),
+            CallbackQueryHandler(admin_unban_start, pattern="^admin_unban_start$"),
+        ],
+        states={
+            BAN_STATE: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_ban_confirm)],
+            UNBAN_STATE: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_unban_confirm)],
+        },
+        fallbacks=[],
+        per_message=False
+    )
+    app.add_handler(ban_unban_conv)
+
+    sendmsg_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_sendmsg_start, pattern=r"^admin_sendmsg_\d+$")],
+        states={ADMIN_SENDMSG_STATE: [MessageHandler(filters.ALL & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_sendmsg_send)]},
+        fallbacks=[],
+        per_message=False
+    )
+    app.add_handler(sendmsg_conv)
+
+    broadcast_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_broadcast_start, pattern=r"^(admin_broadcast|admin_broadcast_menu)$")],
+        states={BROADCAST_STATE: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_broadcast_send)]},
+        fallbacks=[]
+    )
+    app.add_handler(broadcast_conv)
+
+    app.add_handler(CallbackQueryHandler(admin_channels_handler, pattern="^admin_channels$"))
+
+    # Core generation flow
+    app.add_handler(CallbackQueryHandler(handle_start_gen, pattern="^start_gen$"))
+    app.add_handler(CallbackQueryHandler(start_ai_flow_handler, pattern="^start_ai_flow$"))
+    app.add_handler(CallbackQueryHandler(check_sub_button_handler, pattern="^check_sub$"))
+    app.add_handler(CallbackQueryHandler(generate_cb, pattern=r"^count_\d+$"))
+    app.add_handler(CallbackQueryHandler(buy_pack_handler, pattern=r"^buy_pack_\d+$"))
+    app.add_handler(CallbackQueryHandler(gen_image_from_prompt_handler, pattern="^gen_image_from_prompt$"))
+    app.add_handler(CallbackQueryHandler(ai_chat_from_prompt_handler, pattern="^ai_chat_from_prompt$"))
+
+    # Commands
+    app.add_handler(CommandHandler("get", cmd_get))
+    app.add_handler(CommandHandler("refund", cmd_refund))
+
+    # Payments
+    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+
+    # Text
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_handler))
+
+    app.add_error_handler(on_error)
+    return app
+
+def main():
+    app = build_app()
+    logger.info("Application initialized (Soft UX build). Starting polling...")
     app.run_polling()
 
 if __name__ == "__main__":
