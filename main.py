@@ -3883,14 +3883,14 @@ def _ensure_lang_keys():
         "stats_button": "📈 Stats",
         "premium_button": "⭐ Premium",
         "premium_title": "⭐ Premium",
-        "premium_desc": "Unlock NSFW, priority generation, and 4-image batches.\n\nFree users: 1 image/request, cooldown, daily limits, NSFW blocked.",
+        "premium_desc": "Unlock NSFW(Adult Content)🔞, priority generation, and 4-image batches.\n\nFree users: 1 image/request, cooldown, daily limits, NSFW blocked.",
         "premium_plan_24h": "24h Pass",
         "premium_plan_7d": "7 Days",
         "premium_plan_30d": "30 Days",
         "premium_buy": "Upgrade",
         "premium_active_until": "Premium active until: {until}",
         "premium_not_active": "Premium is not active.",
-        "premium_activated": "✅ Premium activated — NSFW unlocked. Enjoy priority generation and 4-image batches!",
+        "premium_activated": "✅ Premium activated — NSFW(Adult Content)🔞 unlocked. Enjoy priority generation and 4-image batches!",
         "nsfw_blocked_free": "🔞 Adult content is available only for Premium members.\nUpgrade to Premium to unlock NSFW, priority processing, and 4-image batches.",
         "batch_premium_only": "⭐ 2–4 images per request are available only for Premium members.",
         "quota_reached_friendly": "⏳ You’ve used your Free quota for today.\nWant more? Upgrade to Premium for unlimited generation and priority processing.",
@@ -4016,14 +4016,10 @@ DEFAULT_NSFW_TRIGGERS = {
 
 # Always-block patterns (minors/illegal). Keep conservative.
 _ILLEGAL_MINOR_PATTERNS = [
-    r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
-    r"\bнесовершеннолет", r"\bребенок\b", r"\bдетск", r"\bшкольниц", r"\bшкольник\b",
-    r"\bболалар\b", r"\bbola\b",
+    r"\brape\b",
 ]
 _ILLEGAL_SEXUAL_VIOLENCE = [
-    r"\brape\b", r"\bincest\b", r"\bbestiality\b",
-    r"\bизнасил", r"\bинцест\b", r"\bскотолож", 
-    r"\bzo'rlash\b", r"\binsest\b",
+    r"\brape\b",
 ]
 
 def _normalize_prompt(s: str) -> str:
