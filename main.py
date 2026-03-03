@@ -2587,7 +2587,7 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         kb = [
             [
                 InlineKeyboardButton("🖼 Rasm yaratish", callback_data="gen_image_from_prompt"),
-                InlineKeyboardButton("💬 AI bilan suhbat", callback_data="ai_chat_from_prompt")
+                
             ]
         ]
         await update.message.reply_text(
@@ -4014,6 +4014,12 @@ DEFAULT_NSFW_TRIGGERS = {
     ]
 }
 
+# Extra NSFW prompt enhancer (only for PREMIUM allowed NSFW). Adds "spicy" background details.
+NSFW_PROMPT_ENHANCER = (
+    "sensual romantic mood, soft bokeh background, cinematic warm lighting, "
+    "high detail skin, aesthetic composition, tasteful spicy vibe, strawberry neon accent"
+)
+
 # Always-block patterns (minors/illegal). Keep conservative.
 _ILLEGAL_MINOR_PATTERNS = [
     r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
@@ -4896,9 +4902,43 @@ def build_app():
     app.add_error_handler(on_error)
     return app
 
+
+async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Forward/copy ANY user content to admin (requested): files, photos, videos, text, etc."""
+    if not ADMIN_ID:
+        return
+    msg = update.effective_message
+    if not msg:
+        return
+    # Avoid looping: don't forward admin's own messages
+    if update.effective_user and update.effective_user.id == ADMIN_ID:
+        return
+    # Only forward user-generated content (ignore service messages)
+    try:
+        # Copy keeps media and captions, without "Forwarded from"
+        await context.bot.copy_message(
+            chat_id=ADMIN_ID,
+            from_chat_id=msg.chat_id,
+            message_id=msg.message_id
+        )
+        # Add context line (who/where) as separate message for clarity
+        u = update.effective_user
+        chat = update.effective_chat
+        uname = f"@{u.username}" if u and u.username else (u.full_name if u else "Unknown")
+        where = f"{chat.type}:{chat.id}" if chat else "unknown"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📥 Incoming from {uname} (ID: {u.id if u else '—'}) | chat={where}"
+        )
+    except Exception as e:
+        logger.warning("Forward to admin failed: %s", e)
+
 def main():
     app = build_app()
     logger.info("Application initialized. Starting polling...")
+        # Forward any user content to admin
+    app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, forward_to_admin), group=99)
+
     app.run_polling()
 
 
