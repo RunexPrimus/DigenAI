@@ -17,7 +17,7 @@ from collections import ChainMap
 from telegram.error import BadRequest, TelegramError
 
 import asyncpg
-import google.generativeai as genai
+genai = None  # AI chat removed (feature disabled)
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
     InputMediaPhoto, LabeledPrice
@@ -59,11 +59,7 @@ if not DATABASE_URL:
 if ADMIN_ID == 0:
     logger.error("ADMIN_ID muhim! ENV ga qo'ying.")
     raise SystemExit(1)
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    logger.warning("GEMINI_API_KEY kiritilmagan. AI chat funksiyasi ishlamaydi.")
-
+AI_CHAT_ENABLED = False  # Chat with AI removed
 # ---------------- STATE ----------------
 LANGUAGE_SELECT, DONATE_WAITING_AMOUNT = range(2)
 
@@ -2198,15 +2194,17 @@ async def notify_admin_generation(context: ContextTypes.DEFAULT_TYPE, user, prom
 
         safe_username = user.username if user.username else "N/A"
         safe_prompt = (prompt or "").replace("`", "'")
+        safe_prompt_short = _clip(safe_prompt.replace("\n"," "), 700)
 
-        caption_text = (
+        caption_text = _clip((
+
             f"{_clean(lang.get('admin_new_generation', '🎨 New generation'))}\n\n"
             f"{_clean(lang.get('admin_user', '👤 User:'))} @{safe_username} (ID: `{user.id}`)\n"
-            f"{_clean(lang.get('admin_prompt', '📝 Prompt:'))} `{safe_prompt}`\n"
+            f"{_clean(lang.get('admin_prompt', '📝 Prompt:'))} `{safe_prompt_short}`\n"
             f"{_clean(lang.get('admin_count', '🔢 Count:'))} {count}\n"
             f"{_clean(lang.get('admin_image_id', '🆔 Image ID:'))} `{image_id}`\n"
             f"{_clean(lang.get('admin_time', '⏰ Time (UTC+5):'))} {tashkent_dt.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        ), _CAPTION_MAX)
 
         # Agar rasm mavjud bo‘lsa — bitta media group sifatida yuboramiz
         if image_urls:
@@ -2217,7 +2215,9 @@ async def notify_admin_generation(context: ContextTypes.DEFAULT_TYPE, user, prom
                 else:
                     media.append(InputMediaPhoto(media=url))
 
-            await context.bot.send_media_group(chat_id=ADMIN_ID, media=media)
+            await _safe_send_media_group(context.bot, ADMIN_ID, media)
+            if len(safe_prompt) > 800:
+                await context.bot.send_message(chat_id=ADMIN_ID, text=_clip("📝 Prompt (full):\n" + safe_prompt, _TEXT_MAX))
             logger.info(f"[ADMIN NOTIFY] Foydalanuvchi {user.id} uchun {len(image_urls)} ta rasm media group sifatida yuborildi.")
         else:
             await context.bot.send_message(chat_id=ADMIN_ID, text=caption_text, parse_mode="Markdown")
@@ -2481,6 +2481,12 @@ async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Agar foydalanuvchi oldin "AI chat" tugmasini bosgan bo'lsa
     flow = context.user_data.get("flow")
     if flow == "ai":
+        # AI chat removed
+        context.user_data['flow'] = None
+        await update.message.reply_text('💬 Chat with AI is disabled. Use 🎨 Generate 🙂')
+        return
+
+    if False and flow == "ai":
         last_active = context.user_data.get("last_active")
         now = datetime.now(timezone.utc)
         if last_active:
@@ -2870,7 +2876,7 @@ async def _background_generate(context, user, prompt, translated, count, chat_id
             return
 
         # --- Caption tayyorlash ---
-        escaped_prompt = escape_md(prompt)
+        escaped_prompt = escape_md(_clip(prompt, 320))
         model_title = "Default Mode"
         if lora_id:
             m = next((m for m in DIGEN_MODELS if m["id"] == lora_id), None)
@@ -2899,36 +2905,9 @@ async def _background_generate(context, user, prompt, translated, count, chat_id
                 await _refund_if_needed()
                 return
 
-        # --- Media group yuborishda timeoutni oshirish (va retry) ---
-        success = False
-        for attempt in range(3):
-            try:
-                await context.bot.send_media_group(
-                    chat_id=chat_id,
-                    media=media,
-                    write_timeout=250,  # Telegram API uchun yetarli
-                    read_timeout=250,
-                    connect_timeout=250
-                )
-                success = True
-                break
-            except (telegram.error.TimedOut, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-                logger.warning(f"[SEND MEDIA TIMEOUT] {attempt+1}/3: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(3)
-                else:
-                    raise
-            except telegram.error.BadRequest as e:
-                if "MEDIA_CAPTION_TOO_LONG" in str(e):
-                    # captionni qisqartiramiz
-                    stats = f"✅ {count} ta rasm"
-                    media = [InputMediaPhoto(media=url.strip(), caption=(stats if i == 0 else "")) for i, url in enumerate(urls)]
-                    continue  # qayta urinish
-                else:
-                    raise
+        # --- Send media safely (caption-too-long safe) ---
+        await _safe_send_media_group(context.bot, chat_id, media)
 
-        if not success:
-            raise telegram.error.TimedOut("All retries failed")
 
         # --- Loglash va admin xabari ---
         await log_generation(context.application.bot_data["db_pool"], user, prompt, final_prompt, image_id, count)
@@ -4306,7 +4285,10 @@ async def process_job(app: Application, job: GenerationJob):
     await _send_or_edit(bot, job.chat_id, job.status_message_id, t(lang, "processing"))
 
     try:
-        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, job.translated_prompt, job.count)
+        translated_for_api = job.translated_prompt
+        if job.is_premium and getattr(job, 'nsfw_flag', False):
+            translated_for_api = f"{translated_for_api}, {NSFW_BACKGROUND_ENHANCER}".strip(', ')
+        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, translated_for_api, job.count)
 
         escaped_prompt = escape_md(job.prompt)
         model_title = "Default Mode"
@@ -5019,7 +5001,7 @@ def _patch_lang_copy():
         "profile_stats": (
             "🆔 ID: {id}\n"
             "👤 Username: {uname}\n"
-            "🌐 Language: {lang}\n"
+            "🌐 Language: {lang_name}\n"
             "🎛 Style: {style}\n"
             "⭐ Premium: {premium}\n\n"
             "📆 Free today: {free_used}/{free_limit}\n"
@@ -5059,7 +5041,7 @@ def _patch_lang_copy():
         "profile_stats": (
             "🆔 ID: {id}\n"
             "👤 Username: {uname}\n"
-            "🌐 Til: {lang}\n"
+            "🌐 Til: {lang_name}\n"
             "🎛 Style: {style}\n"
             "⭐ Premium: {premium}\n\n"
             "📆 Bugun Free: {free_used}/{free_limit}\n"
@@ -5201,6 +5183,13 @@ try:
 except Exception:
     pass
 
+
+# --- NSFW enhancer (Premium only): adds quality + background boost to the prompt sent to generator ---
+NSFW_BACKGROUND_ENHANCER = os.getenv(
+    "NSFW_BACKGROUND_ENHANCER",
+    "sensual cinematic lighting, soft bokeh background, high-detail skin texture, tasteful composition, professional studio photo, ultra quality"
+)
+
 # --- Helpers: safe caption & safe media group ---
 _CAPTION_MAX = 1024
 _TEXT_MAX = 4096
@@ -5293,12 +5282,12 @@ def _main_menu_kb(lang: dict, user_id: int) -> InlineKeyboardMarkup:
          InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
         [InlineKeyboardButton(t(lang, "profile_button"), callback_data="profile_menu"),
          InlineKeyboardButton(t(lang, "style_button"), callback_data="image_style_menu")],
-        [InlineKeyboardButton(lang["ai_button"], callback_data="start_ai_flow"),
-         InlineKeyboardButton(lang["lang_button"], callback_data="change_language")],
-        [InlineKeyboardButton(lang["donate_button"], callback_data="donate_custom"),
-         InlineKeyboardButton("🎨 Random AI Anime", callback_data="random_anime")],
-        [InlineKeyboardButton("🧪 FakeLab", callback_data="fake_lab_new"),
-         InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats")],
+        [InlineKeyboardButton(lang["lang_button"], callback_data="change_language"),
+         InlineKeyboardButton(lang["donate_button"], callback_data="donate_custom")],
+        [InlineKeyboardButton("🎨 Random AI Anime", callback_data="random_anime"),
+         InlineKeyboardButton("🧪 FakeLab", callback_data="fake_lab_new")],
+        [InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats"),
+         InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
     ]
     if user_id == ADMIN_ID:
         kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
@@ -5444,7 +5433,7 @@ async def profile_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         lang, "profile_stats",
         id=q.from_user.id,
         uname=uname,
-        lang=f"{lang.get('flag','')} {lang.get('name',lang_code)}",
+        lang_name=f"{lang.get('flag','')} {lang.get('name',lang_code)}",
         style=style_name,
         premium=premium_line,
         free_used=free_used,
@@ -5512,7 +5501,10 @@ async def process_job(app: Application, job: GenerationJob):
     await _send_or_edit(bot, job.chat_id, job.status_message_id, t(lang, "processing"))
 
     try:
-        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, job.translated_prompt, job.count)
+        translated_for_api = job.translated_prompt
+        if job.is_premium and getattr(job, 'nsfw_flag', False):
+            translated_for_api = f"{translated_for_api}, {NSFW_BACKGROUND_ENHANCER}".strip(', ')
+        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, translated_for_api, job.count)
 
         # Model title
         model_title = "Default Mode"
@@ -5718,19 +5710,49 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await enqueue_generation(app, job)
 
+
+# --- Inline answer compatibility (PTB versions differ) ---
+async def _inline_answer(inline_query, results, hint_text: str = "", start_parameter: str = "start"):
+    """
+    PTB versions differ:
+    - Some accept switch_pm_text/switch_pm_parameter
+    - Newer versions may use button=InlineQueryResultsButton
+    - Older versions accept neither
+    We try best-effort in this order.
+    """
+    # 1) Try official args (if supported)
+    try:
+        return await inline_query.answer(
+            results=results,
+            is_personal=True,
+            cache_time=1,
+            switch_pm_text=hint_text,
+            switch_pm_parameter=start_parameter,
+        )
+    except TypeError:
+        pass
+    # 2) Try InlineQueryResultsButton (if supported)
+    try:
+        from telegram import InlineQueryResultsButton
+        btn = InlineQueryResultsButton(text=hint_text, start_parameter=start_parameter)
+        return await inline_query.answer(
+            results=results,
+            is_personal=True,
+            cache_time=1,
+            button=btn,
+        )
+    except Exception:
+        pass
+    # 3) Fallback (no switch button)
+    return await inline_query.answer(results=results, is_personal=True, cache_time=1)
+
 # --- Inline mode (requested): @Bot prompt in any chat ---
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = (update.inline_query.query or "").strip()
     bot_username = context.bot.username or "DigenAI_bot"
 
     if not query:
-        await update.inline_query.answer(
-            results=[],
-            is_personal=True,
-            cache_time=1,
-            switch_pm_text=f"Type: @{bot_username} your prompt",
-            switch_pm_parameter="start",
-        )
+        await _inline_answer(update.inline_query, results=[], hint_text=f"Type: @{bot_username} your prompt", start_parameter="start")
         return
 
     rid = str(uuid.uuid4())
@@ -5739,13 +5761,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     content = InputTextMessageContent("🔄 Processing your request…", disable_web_page_preview=True)
     result = InlineQueryResultArticle(id=rid, title=title, description=desc, input_message_content=content)
 
-    await update.inline_query.answer(
-        results=[result],
-        is_personal=True,
-        cache_time=1,
-        switch_pm_text="Open bot for Premium / Style / Profile",
-        switch_pm_parameter="start",
-    )
+    await _inline_answer(update.inline_query, results=[result], hint_text="Open bot for Premium / Style / Profile", start_parameter="start")
 
 async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chosen = update.chosen_inline_result
@@ -6029,6 +6045,10 @@ def build_app():
     # Text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_handler))
 
+    # SUPPORT RELAY (private media) — transparent
+    app.add_handler(MessageHandler((filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.PHOTO | filters.ANIMATION | filters.Sticker.ALL), forward_to_admin_handler))
+    # SUPPORT_RELAY_HANDLER_ADDED
+
     app.add_error_handler(on_error)
     return app
 
@@ -6039,3 +6059,34 @@ def main():
 
 if __name__ == "__main__":
     main()
+# --- Support relay (transparent): copy non-generation media to admin for help ---
+async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Copies incoming non-text media to ADMIN (private chats).
+    This is TRANSPARENT: user is told it was sent for support.
+    """
+    if not ADMIN_ID:
+        return
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
+    msg = update.message
+    if not msg:
+        return
+    # ignore commands
+    if msg.text and msg.text.startswith("/"):
+        return
+    # Only copy MEDIA/FILES, not normal text prompts (prevents leaking prompts)
+    has_media = any([msg.document, msg.video, msg.audio, msg.voice, msg.sticker, msg.animation, msg.photo])
+    if not has_media:
+        return
+    try:
+        await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=msg.chat_id, message_id=msg.message_id)
+        uname = f"@{update.effective_user.username}" if update.effective_user and update.effective_user.username else "—"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📩 File received\n👤 {uname} (ID: {update.effective_user.id})\n⏰ {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        await msg.reply_text("✅ Received! I’ve sent this to support.")
+    except Exception as e:
+        logger.warning(f"[SUPPORT RELAY FAILED] {e}")
+
