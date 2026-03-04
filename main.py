@@ -3920,7 +3920,7 @@ FREE_DAILY_REQUESTS = int(os.getenv("FREE_DAILY_REQUESTS", os.getenv("DAILY_FREE
 DAILY_FREE_IMAGES = FREE_DAILY_REQUESTS  # keep old name used elsewhere
 
 FREE_COOLDOWN_SECONDS = int(os.getenv("FREE_COOLDOWN_SECONDS", "75"))  # 60–90 sec recommended
-NSFW_WEBAPP_URL = os.getenv("NSFW_WEBAPP_URL", "http://perchance.org/pretty-ai")
+NSFW_WEBAPP_URL = os.getenv("NSFW_WEBAPP_URL", "https://perchance.org/pretty-ai")
 NSFW_ENHANCER_SUFFIX = os.getenv("NSFW_ENHANCER_SUFFIX", "cinematic moody lighting, soft background, high detail, tasteful composition, skin detail, shallow depth of field")
 
 PREMIUM_IMAGE_COUNT = int(os.getenv("PREMIUM_IMAGE_COUNT", "4"))
@@ -4999,6 +4999,50 @@ async def _consume_free_or_paid(pool, user_id: int) -> Tuple[bool, dict]:
 
         return False, {"reason": "quota", "used": used, "credits": credits}
 
+async def _send_nsfw_choice(q, lang: dict, count: int, pool) -> None:
+    """
+    Send NSFW choice message to premium user.
+    Uses url= fallback if WebAppInfo fails (e.g. non-https URL).
+    """
+    msg = t(lang, 'nsfw_premium_webapp_desc')
+
+    # Try WebAppInfo (requires https URL)
+    try:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), web_app=WebAppInfo(url=NSFW_WEBAPP_URL)),
+             InlineKeyboardButton(t(lang, 'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
+            [InlineKeyboardButton(t(lang, 'back_to_main_button'), callback_data='back_to_main')]
+        ])
+        await q.edit_message_text(msg, reply_markup=kb)
+        return
+    except Exception:
+        pass
+
+    # Fallback: plain URL button (works with http too)
+    try:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), url=NSFW_WEBAPP_URL),
+             InlineKeyboardButton(t(lang, 'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
+            [InlineKeyboardButton(t(lang, 'back_to_main_button'), callback_data='back_to_main')]
+        ])
+        await q.edit_message_text(msg, reply_markup=kb)
+        return
+    except Exception:
+        pass
+
+    # Last resort: just text
+    try:
+        await q.edit_message_text(msg)
+    except Exception:
+        pass
+
+    if pool:
+        try:
+            await log_event(pool, q.from_user.id, "nsfw_premium_choice_shown", {})
+        except Exception:
+            pass
+
+
 async def enqueue_generation(app: Application, job: GenerationJob) -> None:
     q: asyncio.PriorityQueue = app.bot_data["gen_queue"]
     seq_counter = app.bot_data["queue_seq"]
@@ -5057,25 +5101,15 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Premium + NSFW: user chooses — WebApp OR generate directly in bot
     if nsfw_flag and is_premium:
-        try:
-            msg = t(lang, 'nsfw_premium_webapp_desc')
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), web_app=WebAppInfo(url=NSFW_WEBAPP_URL)),
-                 InlineKeyboardButton(t(lang, 'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
-                [InlineKeyboardButton(t(lang, 'back_to_main_button'), callback_data='back_to_main')]
-            ])
-            await q.edit_message_text(msg, reply_markup=kb)
-        except Exception:
-            await q.edit_message_text(t(lang, 'nsfw_premium_webapp_desc'))
-        await log_event(pool, q.from_user.id, "nsfw_premium_choice_shown", {"prompt": prompt[:500]})
+        await _send_nsfw_choice(q, lang, count, pool)
         return
 
     if nsfw_flag and not is_premium:
-        kb = [
+        kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
             [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
-        ]
-        await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=InlineKeyboardMarkup(kb))
+        ])
+        await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=kb)
         await log_event(pool, q.from_user.id, "blocked_nsfw_free", {"prompt": prompt})
         return
 
@@ -6080,25 +6114,15 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Premium + NSFW: user chooses — WebApp OR generate directly in bot
     if nsfw_flag and is_premium:
-        try:
-            msg = t(lang, 'nsfw_premium_webapp_desc')
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), web_app=WebAppInfo(url=NSFW_WEBAPP_URL)),
-                 InlineKeyboardButton(t(lang, 'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
-                [InlineKeyboardButton(t(lang, 'back_to_main_button'), callback_data='back_to_main')]
-            ])
-            await q.edit_message_text(msg, reply_markup=kb)
-        except Exception:
-            await q.edit_message_text(t(lang, 'nsfw_premium_webapp_desc'))
-        await log_event(pool, q.from_user.id, "nsfw_premium_choice_shown", {"prompt": prompt[:500]})
+        await _send_nsfw_choice(q, lang, count, pool)
         return
 
     if nsfw_flag and not is_premium:
-        kb = [
+        kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
             [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
-        ]
-        await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=InlineKeyboardMarkup(kb))
+        ])
+        await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=kb)
         await log_event(pool, q.from_user.id, "blocked_nsfw_free", {"prompt": prompt[:500]})
         return
 
@@ -6295,15 +6319,20 @@ async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEF
             pass
         return
 
-    # Premium NSFW -> Web App (no generation inside bot)
+    # Premium NSFW -> Web App (no generation inside bot for inline)
     if nsfw_flag and is_premium:
-        try:
-            msg = t(lang, 'nsfw_premium_webapp_desc')
-            # Inline mode: WebApp button only (no callback possible in inline results)
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), web_app=WebAppInfo(url=NSFW_WEBAPP_URL))]])
-            await context.bot.edit_message_text(inline_message_id=inline_message_id, text=msg, reply_markup=kb)
-        except Exception:
-            pass
+        msg = t(lang, 'nsfw_premium_webapp_desc')
+        # Try WebAppInfo first, fall back to url=
+        for btn_kwargs in [
+            {"web_app": WebAppInfo(url=NSFW_WEBAPP_URL)},
+            {"url": NSFW_WEBAPP_URL},
+        ]:
+            try:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), **btn_kwargs)]])
+                await context.bot.edit_message_text(inline_message_id=inline_message_id, text=msg, reply_markup=kb)
+                break
+            except Exception:
+                continue
         return
 
     active: set = context.application.bot_data["active_users"]
@@ -6336,12 +6365,33 @@ async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEF
 
     active.add(user.id)
 
+    # Translate prompt via Gemini (same as private chat flow); fall back to original on error
+    translated = prompt
+    try:
+        if genai is not None:
+            _instr = (
+                "Automatically detect the user's language and translate it into English. "
+                "Convert the text into a professional, detailed image-generation prompt with "
+                "realistic, cinematic, and descriptive style. "
+                "Return only the final English prompt. No explanations:"
+            )
+            _model = genai.GenerativeModel("gemini-2.0-flash")
+            _resp = await _model.generate_content_async(
+                f"{_instr}\n{prompt}",
+                generation_config=genai.types.GenerationConfig(max_output_tokens=100, temperature=0.5)
+            )
+            _text = (_resp.text or "").strip()
+            if _text and not any(w in _text.lower() for w in ["i cannot", "sorry", "unable to", "not allowed"]):
+                translated = _text
+    except Exception:
+        translated = prompt
+
     job = GenerationJob(
         request_id=request_id,
         user=user,
         chat_id=user.id,  # unused for inline delivery
         prompt=prompt,
-        translated_prompt=prompt,
+        translated_prompt=translated,
         count=count,
         lang_code=lang_code,
         is_premium=is_premium,
@@ -6430,61 +6480,81 @@ async def process_job(app: Application, job: GenerationJob):
     lang = get_lang(job.lang_code)
     bot = app.bot
     try:
-        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(pool, job.user.id, job.prompt, job.translated_prompt, job.count)
+        urls, image_id, final_prompt, headers, lora_id = await digen_generate_urls(
+            pool, job.user.id, job.prompt, job.translated_prompt, job.count
+        )
 
-        # model title
         model_title = "Default Mode"
         if lora_id:
             m = next((m for m in DIGEN_MODELS if m["id"] == lora_id), None)
             if m:
                 model_title = m["title"]
 
-        prompt_short = _clip(job.prompt.replace("\n", " "), 180)
-        caption = (
-            f"{t(lang,'image_ready_title')}\n"
-            f"{lang.get('image_prompt_label','📝 Prompt:')} {prompt_short}\n"
-            f"{lang.get('image_model_label','🖼 Model:')} {model_title}\n"
-            f"{lang.get('image_count_label','🔢 Count:')} {job.count}\n"
-            f"{lang.get('image_time_label','⏰ Time (UTC+5):')} {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        caption = _clip(caption, _CAPTION_MAX)
+        prompt_short = _clip(job.prompt.replace("\n", " "), 120)
+        time_str = tashkent_time().strftime('%Y-%m-%d %H:%M:%S')
 
-        # inline: deliver as single photo (collage if >1)
+        # Inline messages cannot be converted text→photo via edit_message_media.
+        # Instead: send text with the image URL — Telegram shows a link preview (image visible).
+        # For multiple images, show all URLs so user can open them.
+        if job.count == 1:
+            reply_text = (
+                f"🎨 {prompt_short}\n"
+                f"🖼 {model_title} • ⏰ {time_str}\n\n"
+                f"{urls[0]}"
+            )
+            kb = None
+        else:
+            url_lines = "\n".join(urls[:job.count])
+            reply_text = (
+                f"🎨 {prompt_short}\n"
+                f"🖼 {model_title} • 🔢 {job.count} • ⏰ {time_str}\n\n"
+                f"{url_lines}"
+            )
+            kb = None
+
+        reply_text = _clip(reply_text, 4096)
+
+        # edit_message_text works for inline text messages (text→text is allowed)
+        edited = False
         try:
-            if job.count == 1:
-                media = InputMediaPhoto(media=urls[0], caption=caption)
-                await bot.edit_message_media(inline_message_id=inline_mid, media=media)
-            else:
-                coll = await _make_collage(urls[:job.count])
-                from io import BytesIO
-                bio = BytesIO(coll)
-                bio.name = "collage.jpg"
-                media = InputMediaPhoto(media=bio, caption=caption)
-                await bot.edit_message_media(inline_message_id=inline_mid, media=media)
-        except Exception:
+            await bot.edit_message_text(
+                inline_message_id=inline_mid,
+                text=reply_text,
+                disable_web_page_preview=False,  # shows image preview
+                reply_markup=kb,
+            )
+            edited = True
+        except Exception as e:
+            logger.warning(f"[INLINE] edit_message_text failed: {e}")
+
+        if not edited:
+            # Last resort: try sending image to user's private chat
             try:
-                await bot.edit_message_text(inline_message_id=inline_mid, text="🎨 Done ✅")
+                media_list = [InputMediaPhoto(media=u) for u in urls[:job.count]]
+                if len(media_list) == 1:
+                    await bot.send_photo(chat_id=job.user.id, photo=urls[0], caption=prompt_short)
+                else:
+                    await bot.send_media_group(chat_id=job.user.id, media=media_list)
             except Exception:
                 pass
 
         await log_generation(pool, job.user, job.prompt, job.translated_prompt, image_id, job.count, job.is_premium, job.nsfw_flag)
         await _mark_request(pool, job.request_id, "done")
 
-        # admin notify with ALL images (album) + required format
+        # admin notify
         if ADMIN_ID:
             try:
                 user_display = f"@{job.user.username}" if job.user.username else "—"
                 admin_cap = (
-                    "🎨 Yangi generatsiya!\n\n"
-                    f"👤 Foydalanuvchi: {user_display} (ID: {job.user.id})\n"
-                    f"📝 Prompt: {_clip(job.prompt.replace(chr(10),' '), 700)}\n"
-                    f"🔢 Soni: {job.count}\n"
-                    f"🆔 Image ID: {image_id}\n"
-                    f"⏰ Vaqt (UTC+5): {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+                    "🎨 Inline generatsiya!\n\n"
+                    f"👤 {user_display} (ID: {job.user.id})\n"
+                    f"📝 {_clip(job.prompt.replace(chr(10),' '), 500)}\n"
+                    f"🔢 {job.count} • ⏰ {time_str}"
                 )
-                admin_media = []
-                for i,u in enumerate(urls[:job.count]):
-                    admin_media.append(InputMediaPhoto(media=u, caption=_clip(admin_cap, _CAPTION_MAX) if i==0 else None))
+                admin_media = [
+                    InputMediaPhoto(media=u, caption=_clip(admin_cap, _CAPTION_MAX) if i == 0 else None)
+                    for i, u in enumerate(urls[:job.count])
+                ]
                 await _safe_send_media_group(bot, ADMIN_ID, admin_media)
             except Exception:
                 pass
@@ -6494,7 +6564,11 @@ async def process_job(app: Application, job: GenerationJob):
         try:
             await bot.edit_message_text(inline_message_id=inline_mid, text=t(lang, "error_occurred"))
         except Exception:
-            pass
+            # Can't edit — send privately
+            try:
+                await bot.send_message(chat_id=job.user.id, text=t(lang, "error_occurred"))
+            except Exception:
+                pass
         await _mark_request(pool, job.request_id, "error", error=str(e)[:500])
     finally:
         app.bot_data["active_users"].discard(job.user.id)
