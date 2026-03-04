@@ -5911,6 +5911,7 @@ async def process_job(app: Application, job: GenerationJob):
                 pass
 
 # --- Override: generate_cb (remove "illegal" label; keep safety block) ---
+# --- Override: generate_cb (Premium NSFW -> WebApp + multi-locale NSFW detect) ---
 async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -5923,9 +5924,11 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
     lang = get_lang(lang_code)
 
+    # mandatory channel gating (private)
     if not await force_sub_if_private(update, context, lang_code=lang_code):
         return
 
+    # count from callback
     try:
         req_count = int(q.data.split("_")[1])
     except Exception:
@@ -5937,43 +5940,106 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_premium = _is_premium_row(row)
 
+    # Free user can't pick >1
     if not is_premium and req_count != 1:
         kb = [
             [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
-            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")],
         ]
-        await q.edit_message_text(t(lang, "batch_premium_only") + "\n\n" + t(lang, "premium_desc"), reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(
+            t(lang, "batch_premium_only") + "\n\n" + t(lang, "premium_desc"),
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
         return
 
     count = min(req_count, PREMIUM_IMAGE_COUNT) if is_premium else 1
 
-    # Safety block (no "illegal" wording)
+    # Safety block (minors / violence etc) — keep it, but UX soft
     if _contains_safety(prompt):
         await log_event(pool, q.from_user.id, "blocked_safety", {"prompt": prompt[:500]})
         if ADMIN_ID:
             try:
-                await context.bot.send_message(ADMIN_ID, f"🚫 SAFETY BLOCK\nuser={q.from_user.id}\n{prompt[:700]}")
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    f"🚫 SAFETY BLOCK\nuser={q.from_user.id}\n{prompt[:700]}",
+                )
             except Exception:
                 pass
         await q.edit_message_text(lang.get("error_occurred", "⚠️ Sorry — I can’t help with that request."))
         return
 
+    # ---------- NSFW detect: ANY locale (fix for 'nude' when user lang=uz/ru etc) ----------
     triggers = app.bot_data.get("nsfw_triggers") or {}
-    nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
+    nsfw_flag = False
+    try:
+        p_norm = _normalize_prompt(prompt)
+        for lst in (triggers.values() or []):
+            if not lst:
+                continue
+            for rx in lst:
+                try:
+                    if rx.search(p_norm):
+                        nsfw_flag = True
+                        break
+                except Exception:
+                    continue
+            if nsfw_flag:
+                break
+    except Exception:
+        # fallback to old locale-based check
+        nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
+
+    # Premium + NSFW => WebApp ONLY (NO generation inside bot)
+    if nsfw_flag and is_premium:
+        enh = (prompt or "").strip()
+        if NSFW_ENHANCER_SUFFIX:
+            enh = f"{enh}, {NSFW_ENHANCER_SUFFIX}"
+
+        msg = (
+            f"{t(lang,'nsfw_premium_webapp_title')}\n\n"
+            f"{t(lang,'nsfw_premium_webapp_desc')}\n\n"
+            f"{t(lang,'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
+        )
+
+        # Try WebApp button (URL less “copyable”), fallback to normal url button
+        try:
+            from telegram import WebAppInfo
+            web_btn = InlineKeyboardButton(
+                t(lang, "nsfw_webapp_button"),
+                web_app=WebAppInfo(url=NSFW_WEBAPP_URL),
+            )
+        except Exception:
+            web_btn = InlineKeyboardButton(
+                t(lang, "nsfw_webapp_button"),
+                url=NSFW_WEBAPP_URL,
+            )
+
+        kb = InlineKeyboardMarkup([
+            [web_btn],
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")],
+        ])
+
+        await q.edit_message_text(msg, reply_markup=kb, disable_web_page_preview=True)
+        await log_event(pool, q.from_user.id, "nsfw_premium_webapp", {"prompt": prompt[:500]})
+        return
+
+    # Free + NSFW => block + upsell
     if nsfw_flag and not is_premium:
         kb = [
             [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
-            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")],
         ]
         await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=InlineKeyboardMarkup(kb))
         await log_event(pool, q.from_user.id, "blocked_nsfw_free", {"prompt": prompt[:500]})
         return
 
+    # already processing
     active: set = app.bot_data["active_users"]
     if q.from_user.id in active:
         await q.edit_message_text(t(lang, "already_processing"))
         return
 
+    # queue hard limit for free
     gen_q: asyncio.PriorityQueue = app.bot_data["gen_queue"]
     if not is_premium and gen_q.qsize() >= STANDARD_QUEUE_HARD_LIMIT:
         await q.edit_message_text(t(lang, "high_load"))
@@ -5984,7 +6050,7 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok, info = await _consume_free_or_paid(pool, q.from_user.id)
         if not ok:
             if info.get("reason") == "banned":
-                await q.edit_message_text("⛔ Sizning akkauntingiz ban qilingan.")
+                await q.edit_message_text("⛔ You are banned.")
                 return
             if info.get("reason") == "cooldown":
                 await q.edit_message_text(t(lang, "cooldown_friendly", sec=int(info.get("sec", 0))))
@@ -6000,6 +6066,7 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         paid_credits_used = int(info.get("paid_credits_used") or 0)
 
+    # enqueue job
     request_id = uuid.uuid4()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -6011,6 +6078,7 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active.add(q.from_user.id)
     wait_sec = _estimate_wait_seconds(app)
     status_msg = await q.message.reply_text(t(lang, "queued", sec=wait_sec))
+
     job = GenerationJob(
         request_id=request_id,
         user=q.from_user,
