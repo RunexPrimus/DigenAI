@@ -21,7 +21,8 @@ genai = None  # AI chat removed (feature disabled)
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
     InputMediaPhoto, LabeledPrice,
-    InlineQueryResultArticle, InputTextMessageContent
+    InlineQueryResultArticle, InputTextMessageContent,
+    WebAppInfo
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -3968,9 +3969,9 @@ def _ensure_lang_keys():
         "profile_button": "👤 Profile",
         "style_button": "🎛 Image Style",
         "nsfw_premium_webapp_title": "✅ Accepted!",
-        "nsfw_premium_webapp_desc": "Because of Telegram rules, adult generation continues in our Web App. Tap the button below 👇",
-        "nsfw_webapp_button": "🌐 Continue in Web App",
-        "nsfw_continue_in_bot_button": "🤖 Continue in Bot",
+        "nsfw_premium_webapp_desc": "Because of Telegram rules, adult generation continues in our Web App. Tap below or continue generating in the bot 👇",
+        "nsfw_webapp_button": "🌐 Open Web App",
+        "nsfw_bot_button": "🤖 Continue in Bot",
         "nsfw_choice_title": "🔞 NSFW Request Detected",
         "nsfw_choice_desc": "Choose where to generate your adult image:",
         "nsfw_enhanced_label": "📝 Enhanced prompt:",
@@ -4007,8 +4008,8 @@ def _ensure_lang_keys():
         "profile_button": "👤 Profil",
         "style_button": "🎛 Image Style",
         "nsfw_premium_webapp_title": "✅ Qabul qilindi!",
-        "nsfw_premium_webapp_desc": "Telegram qoidalari sababli adult kontent Web App’da davom etadi. Yoki toʻgʻridan-toʻgʻridan botda generatsiya qilishingiz mumkin.",
-        "nsfw_webapp_button": "🌐 Web App’da davom ettirish",
+        "nsfw_premium_webapp_desc": "Telegram qoidalari sababli adult kontent Web App'da davom etadi. Yoki botda generatsiya qiling 👇",
+        "nsfw_webapp_button": "🌐 Web App ochish",
         "nsfw_bot_button": "🤖 Botda davom ettirish",
         "nsfw_enhanced_label": "📝 Kuchaytirilgan prompt:",
         "inline_choose_count": "🔢 Nechta rasm?",
@@ -4018,30 +4019,104 @@ def _ensure_lang_keys():
 
     })
 
-    # Add nsfw_bot_button to ALL remaining languages
-    _NSFW_BOT_TRANSLATIONS = {
-        "ru": ("🤖 Продолжить в боте", "Из-за правил Telegram adult-контент доступен через Web App. Или вы можете генерировать прямо в боте."),
-        "id": ("🤖 Lanjutkan di Bot", "Karena aturan Telegram, konten dewasa tersedia di Web App. Atau Anda bisa generate langsung di bot."),
-        "lt": ("🤖 Tęsti bote", "Dėl Telegram taisyklių suaugusiųjų turinys pasiekiamas per Web App. Arba galite generuoti tiesiai bote."),
-        "esmx": ("🤖 Continuar en el Bot", "Debido a las reglas de Telegram, el contenido adulto está en Web App. O puedes generar directamente en el bot."),
-        "eses": ("🤖 Continuar en el Bot", "Debido a las reglas de Telegram, el contenido adulto está en Web App. O puedes generar directamente en el bot."),
-        "it": ("🤖 Continua nel Bot", "A causa delle regole di Telegram, i contenuti adulti sono su Web App. Oppure puoi generare direttamente nel bot."),
-        "zhcn": ("🤖 在机器人中继续", "由于 Telegram 规则，成人内容可在 Web App 中生成。或者您可以直接在机器人中生成。"),
-        "bn": ("🤖 বটে চালিয়ে যান", "Telegram নিয়মের কারণে প্রাপ্তবয়স্ক কন্টেন্ট Web App-এ পাওয়া যায়। অথবা সরাসরি বটে তৈরি করতে পারেন।"),
-        "hi": ("🤖 बॉट में जारी रखें", "Telegram के नियमों के कारण adult सामग्री Web App में उपलब्ध है। या आप सीधे बॉट में बना सकते हैं।"),
-        "ptbr": ("🤖 Continuar no Bot", "Devido às regras do Telegram, conteúdo adulto está no Web App. Ou você pode gerar diretamente no bot."),
-        "ar": ("🤖 المتابعة في البوت", "بسبب قواعد تيليغرام، المحتوى للبالغين متاح في تطبيق الويب. أو يمكنك التوليد مباشرة في البوت."),
-        "uk": ("🤖 Продовжити в боті", "Через правила Telegram контент для дорослих доступний у Web App. Або ви можете генерувати прямо в боті."),
-        "vi": ("🤖 Tiếp tục trong Bot", "Do quy tắc Telegram, nội dung người lớn có trong Web App. Hoặc bạn có thể tạo trực tiếp trong bot."),
+    # NSFW choice screen — full translations for ALL 15 languages (update overwrites stale values)
+    _NSFW_FULL = {
+        "en": {
+            "nsfw_premium_webapp_title": "✅ Accepted!",
+            "nsfw_premium_webapp_desc": "Because of Telegram rules, adult generation continues in our Web App. Tap below or continue generating in the bot 👇",
+            "nsfw_webapp_button": "🌐 Open Web App",
+            "nsfw_bot_button": "🤖 Continue in Bot",
+        },
+        "uz": {
+            "nsfw_premium_webapp_title": "✅ Qabul qilindi!",
+            "nsfw_premium_webapp_desc": "Telegram qoidalari sababli adult kontent Web App'da davom etadi. Yoki botda generatsiya qiling 👇",
+            "nsfw_webapp_button": "🌐 Web App ochish",
+            "nsfw_bot_button": "🤖 Botda davom ettirish",
+        },
+        "ru": {
+            "nsfw_premium_webapp_title": "✅ Принято!",
+            "nsfw_premium_webapp_desc": "Из-за правил Telegram генерация adult-контента продолжается в Web App. Или генерируйте прямо в боте 👇",
+            "nsfw_webapp_button": "🌐 Открыть Web App",
+            "nsfw_bot_button": "🤖 Продолжить в боте",
+        },
+        "id": {
+            "nsfw_premium_webapp_title": "✅ Diterima!",
+            "nsfw_premium_webapp_desc": "Karena aturan Telegram, konten dewasa dilanjutkan di Web App. Atau generate langsung di bot 👇",
+            "nsfw_webapp_button": "🌐 Buka Web App",
+            "nsfw_bot_button": "🤖 Lanjutkan di Bot",
+        },
+        "lt": {
+            "nsfw_premium_webapp_title": "✅ Priimta!",
+            "nsfw_premium_webapp_desc": "Dėl Telegram taisyklių suaugusiųjų turinys generuojamas Web App. Arba generuokite tiesiogiai bote 👇",
+            "nsfw_webapp_button": "🌐 Atidaryti Web App",
+            "nsfw_bot_button": "🤖 Tęsti bote",
+        },
+        "esmx": {
+            "nsfw_premium_webapp_title": "✅ ¡Aceptado!",
+            "nsfw_premium_webapp_desc": "Por reglas de Telegram, el contenido adulto continúa en Web App. O genera directamente en el bot 👇",
+            "nsfw_webapp_button": "🌐 Abrir Web App",
+            "nsfw_bot_button": "🤖 Continuar en el Bot",
+        },
+        "eses": {
+            "nsfw_premium_webapp_title": "✅ ¡Aceptado!",
+            "nsfw_premium_webapp_desc": "Por reglas de Telegram, el contenido adulto continúa en Web App. O genera directamente en el bot 👇",
+            "nsfw_webapp_button": "🌐 Abrir Web App",
+            "nsfw_bot_button": "🤖 Continuar en el Bot",
+        },
+        "it": {
+            "nsfw_premium_webapp_title": "✅ Accettato!",
+            "nsfw_premium_webapp_desc": "Per le regole di Telegram, la generazione adult continua in Web App. Oppure genera direttamente nel bot 👇",
+            "nsfw_webapp_button": "🌐 Apri Web App",
+            "nsfw_bot_button": "🤖 Continua nel Bot",
+        },
+        "zhcn": {
+            "nsfw_premium_webapp_title": "✅ 已接受！",
+            "nsfw_premium_webapp_desc": "由于 Telegram 规则，成人内容在 Web App 中生成。或者直接在机器人中生成 👇",
+            "nsfw_webapp_button": "🌐 打开 Web App",
+            "nsfw_bot_button": "🤖 在机器人中继续",
+        },
+        "bn": {
+            "nsfw_premium_webapp_title": "✅ গৃহীত হয়েছে!",
+            "nsfw_premium_webapp_desc": "Telegram নিয়মের কারণে adult কন্টেন্ট Web App-এ তৈরি হয়। অথবা সরাসরি বটে তৈরি করুন 👇",
+            "nsfw_webapp_button": "🌐 Web App খুলুন",
+            "nsfw_bot_button": "🤖 বটে চালিয়ে যান",
+        },
+        "hi": {
+            "nsfw_premium_webapp_title": "✅ स्वीकृत!",
+            "nsfw_premium_webapp_desc": "Telegram नियमों के कारण adult सामग्री Web App में बनती है। या सीधे बॉट में बनाएं 👇",
+            "nsfw_webapp_button": "🌐 Web App खोलें",
+            "nsfw_bot_button": "🤖 बॉट में जारी रखें",
+        },
+        "ptbr": {
+            "nsfw_premium_webapp_title": "✅ Aceito!",
+            "nsfw_premium_webapp_desc": "Por regras do Telegram, conteúdo adulto continua no Web App. Ou gere diretamente no bot 👇",
+            "nsfw_webapp_button": "🌐 Abrir Web App",
+            "nsfw_bot_button": "🤖 Continuar no Bot",
+        },
+        "ar": {
+            "nsfw_premium_webapp_title": "✅ مقبول!",
+            "nsfw_premium_webapp_desc": "بسبب قواعد تيليغرام، يتم إنشاء المحتوى للبالغين في Web App. أو أنشئ مباشرة في البوت 👇",
+            "nsfw_webapp_button": "🌐 فتح Web App",
+            "nsfw_bot_button": "🤖 المتابعة في البوت",
+        },
+        "uk": {
+            "nsfw_premium_webapp_title": "✅ Прийнято!",
+            "nsfw_premium_webapp_desc": "Через правила Telegram контент для дорослих генерується у Web App. Або генеруйте прямо в боті 👇",
+            "nsfw_webapp_button": "🌐 Відкрити Web App",
+            "nsfw_bot_button": "🤖 Продовжити в боті",
+        },
+        "vi": {
+            "nsfw_premium_webapp_title": "✅ Đã chấp nhận!",
+            "nsfw_premium_webapp_desc": "Do quy tắc Telegram, nội dung người lớn được tạo trong Web App. Hoặc tạo trực tiếp trong bot 👇",
+            "nsfw_webapp_button": "🌐 Mở Web App",
+            "nsfw_bot_button": "🤖 Tiếp tục trong Bot",
+        },
     }
-    for lc, (btn_text, desc_text) in _NSFW_BOT_TRANSLATIONS.items():
+    for lc, keys in _NSFW_FULL.items():
         ld = LANGUAGES.get(lc)
         if ld is not None:
-            ld.setdefault("nsfw_bot_button", btn_text)
-            ld.setdefault("nsfw_premium_webapp_desc", desc_text)
-            ld.setdefault("nsfw_webapp_button", "🌐 Continue in Web App")
-            ld.setdefault("nsfw_premium_webapp_title", "✅ Accepted!")
-            ld.setdefault("nsfw_enhanced_label", "📝 Enhanced prompt:")
+            ld.update(keys)
+
 
 _ensure_lang_keys()
 
@@ -4983,22 +5058,15 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Premium + NSFW: user chooses — WebApp OR generate directly in bot
     if nsfw_flag and is_premium:
         try:
-            enh = prompt.strip()
-            if NSFW_ENHANCER_SUFFIX:
-                enh = f"{enh}, {NSFW_ENHANCER_SUFFIX}"
-            msg = (
-                f"{t(lang,'nsfw_premium_webapp_title')}\n\n"
-                f"{t(lang,'nsfw_premium_webapp_desc')}\n\n"
-                f"{t(lang,'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
-            )
+            msg = t(lang, 'nsfw_premium_webapp_desc')
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang,'nsfw_webapp_button'), url=NSFW_WEBAPP_URL),
-                 InlineKeyboardButton(t(lang,'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
-                [InlineKeyboardButton(t(lang,'back_to_main_button'), callback_data='back_to_main')]
+                [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), web_app=WebAppInfo(url=NSFW_WEBAPP_URL)),
+                 InlineKeyboardButton(t(lang, 'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
+                [InlineKeyboardButton(t(lang, 'back_to_main_button'), callback_data='back_to_main')]
             ])
-            await q.edit_message_text(msg, reply_markup=kb, disable_web_page_preview=True)
+            await q.edit_message_text(msg, reply_markup=kb)
         except Exception:
-            await q.edit_message_text(t(lang,'nsfw_premium_webapp_desc'))
+            await q.edit_message_text(t(lang, 'nsfw_premium_webapp_desc'))
         await log_event(pool, q.from_user.id, "nsfw_premium_choice_shown", {"prompt": prompt[:500]})
         return
 
@@ -6013,20 +6081,13 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Premium + NSFW: user chooses — WebApp OR generate directly in bot
     if nsfw_flag and is_premium:
         try:
-            enh = prompt.strip()
-            if NSFW_ENHANCER_SUFFIX:
-                enh = f"{enh}, {NSFW_ENHANCER_SUFFIX}"
-            msg = (
-                f"{t(lang, 'nsfw_premium_webapp_title')}\n\n"
-                f"{t(lang, 'nsfw_premium_webapp_desc')}\n\n"
-                f"{t(lang, 'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
-            )
+            msg = t(lang, 'nsfw_premium_webapp_desc')
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), url=NSFW_WEBAPP_URL),
+                [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), web_app=WebAppInfo(url=NSFW_WEBAPP_URL)),
                  InlineKeyboardButton(t(lang, 'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
                 [InlineKeyboardButton(t(lang, 'back_to_main_button'), callback_data='back_to_main')]
             ])
-            await q.edit_message_text(msg, reply_markup=kb, disable_web_page_preview=True)
+            await q.edit_message_text(msg, reply_markup=kb)
         except Exception:
             await q.edit_message_text(t(lang, 'nsfw_premium_webapp_desc'))
         await log_event(pool, q.from_user.id, "nsfw_premium_choice_shown", {"prompt": prompt[:500]})
@@ -6237,17 +6298,10 @@ async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEF
     # Premium NSFW -> Web App (no generation inside bot)
     if nsfw_flag and is_premium:
         try:
-            enh = prompt.strip()
-            if NSFW_ENHANCER_SUFFIX:
-                enh = f"{enh}, {NSFW_ENHANCER_SUFFIX}"
-            msg = (
-                f"{t(lang,'nsfw_premium_webapp_title')}\n\n"
-                f"{t(lang,'nsfw_premium_webapp_desc')}\n\n"
-                f"{t(lang,'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
-            )
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,'nsfw_webapp_button'), url=NSFW_WEBAPP_URL)]])
-            # Note: inline mode can't use nsfw_bot_button (no callback in inline) — WebApp only
-            await context.bot.edit_message_text(inline_message_id=inline_message_id, text=msg, reply_markup=kb, disable_web_page_preview=True)
+            msg = t(lang, 'nsfw_premium_webapp_desc')
+            # Inline mode: WebApp button only (no callback possible in inline results)
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), web_app=WebAppInfo(url=NSFW_WEBAPP_URL))]])
+            await context.bot.edit_message_text(inline_message_id=inline_message_id, text=msg, reply_markup=kb)
         except Exception:
             pass
         return
