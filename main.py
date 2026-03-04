@@ -3982,7 +3982,7 @@ DEFAULT_NSFW_TRIGGERS = {
     "en": [
         r"\bnude\b", r"\bnaked\b", r"\bexplicit\b", r"\bsex\b", r"\bblowjob\b", r"\bpenetration\b",
         r"\bstrip\b", r"\bboobs?\b", r"\bbreasts?\b", r"\bpussy\b", r"\bvagina\b", r"\bpenis\b",
-        r"\bnsfw\b", r"\bporn\b", r"\berotic\b", r"\bfetish\b",
+        r"\bnsfw\b", r"\bporn\b", r"\berotic\b", r"\bfetish\b", r"\bsexy\b" ,
     ],
     "uz": [
         r"\byalang'och\b", r"\byalangoch\b", r"\bjinsiy\b", r"\bseks\b", r"\bporno\b",
