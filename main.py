@@ -20,11 +20,13 @@ import asyncpg
 genai = None  # AI chat removed (feature disabled)
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    InputMediaPhoto, LabeledPrice
+    InputMediaPhoto, LabeledPrice,
+    InlineQueryResultArticle, InputTextMessageContent
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters, ConversationHandler, PreCheckoutQueryHandler
+    ContextTypes, filters, ConversationHandler, PreCheckoutQueryHandler,
+    InlineQueryHandler, ChosenInlineResultHandler
 )
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
