@@ -6101,8 +6101,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-        await msg.reply_text("✅ Received! I’ve sent this to support.")
-    except Exception as e:
-        logger.warning(f"[SUPPORT RELAY FAILED] {e}")
-
