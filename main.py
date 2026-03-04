@@ -2427,64 +2427,33 @@ async def cmd_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         async with context.application.bot_data["db_pool"].acquire() as conn:
             row = await conn.fetchrow("SELECT language_code FROM users WHERE id = $1", update.effective_user.id)
-            if row and row.get("language_code"):
+            if row:
                 lang_code = row["language_code"]
     lang = get_lang(lang_code)
-
     if not await force_sub_if_private(update, context, lang_code):
         return
-
     chat_type = update.effective_chat.type
     if chat_type in ("group", "supergroup"):
         if not context.args:
-            await update.message.reply_text(lang.get("get_no_args_group") or "❌ In groups, write a prompt after /get.")
+            await update.message.reply_text(lang["get_no_args_group"])
             return
         prompt = " ".join(context.args)
     else:
         if not context.args:
-            await update.message.reply_text(lang.get("get_no_args_private") or "✍️ Please enter a prompt.")
+            await update.message.reply_text(lang["get_no_args_private"])
             return
         prompt = " ".join(context.args)
-
-    pool = context.application.bot_data["db_pool"]
-    await add_user_db(pool, update.effective_user)
-
-    # Determine premium
-    row_u = await get_user_row(pool, update.effective_user.id)
-    is_premium = _is_premium_row(row_u)
-
-    # NSFW early gate
-    triggers = context.application.bot_data.get("nsfw_triggers") or {}
-    nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
-    if nsfw_flag:
-        if not is_premium:
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton((lang.get("premium_button") if isinstance(lang, dict) else None) or "⭐ Premium", callback_data="premium")
-            ]])
-            await update.message.reply_text(t(lang, "nsfw_blocked_free"), reply_markup=kb)
-            return
-
-        enh = prompt.strip()
-        if NSFW_ENHANCER_SUFFIX:
-            enh = f"{enh}, {NSFW_ENHANCER_SUFFIX}"
-        msg = (
-            f"{t(lang,'nsfw_premium_webapp_title')}\n\n"
-            f"{t(lang,'nsfw_premium_webapp_desc')}\n\n"
-            f"{t(lang,'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
-        )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), url=NSFW_WEBAPP_URL)]])
-        await update.message.reply_text(msg, reply_markup=kb, disable_web_page_preview=True)
-        return
-
-    # Save prompt for count->generate flow
+    await add_user_db(context.application.bot_data["db_pool"], update.effective_user)
     context.user_data["prompt"] = prompt
     context.user_data["translated"] = prompt
 
-    # Ask count
+    # Tugmalarni yonma-yon qilish uchun bitta qatorga joylashtiramiz
+    is_premium = _is_premium_row(await get_user_row(context.application.bot_data['db_pool'], update.effective_user.id))
+
     if not is_premium:
         kb = [[
             InlineKeyboardButton("1️⃣", callback_data="count_1"),
-            InlineKeyboardButton((lang.get("premium_button") if isinstance(lang, dict) else None) or "⭐ Premium", callback_data="premium"),
+            InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu"),
         ]]
     else:
         kb = [[
@@ -2495,11 +2464,15 @@ async def cmd_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]]
 
     await update.message.reply_text(
-        f"{lang['select_count']}\n{escape_md(lang['your_prompt_label'])}\n{escape_md(prompt)}",
-        parse_mode="MarkdownV2",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+    f"{lang['select_count']}\n{escape_md(lang['your_prompt_label'])}\n{escape_md(prompt)}",
+    parse_mode="MarkdownV2",
+    reply_markup=InlineKeyboardMarkup(kb)
+)
 
+# Private plain text -> prompt + inline buttons yoki AI chat
+# Yangilangan: Tanlov tugmachasi bosilganda flow o'rnatiladi
+# Private plain text -> prompt + inline buttons yoki AI chat
+# Yangilangan: Tanlov tugmachasi bosilganda flow o'rnatiladi
 async def private_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
@@ -2656,68 +2629,29 @@ async def gen_image_from_prompt_handler(update: Update, context: ContextTypes.DE
     # flow: image
     context.user_data["flow"] = "image_pending_prompt"
 
-    pool = context.application.bot_data["db_pool"]
-
-    # Language
+    # Til
     lang_code = DEFAULT_LANGUAGE
-    async with pool.acquire() as conn:
-        row_l = await conn.fetchrow("SELECT language_code FROM users WHERE id = $1", q.from_user.id)
-        if row_l and row_l.get("language_code"):
-            lang_code = row_l["language_code"]
+    async with context.application.bot_data["db_pool"].acquire() as conn:
+        row = await conn.fetchrow("SELECT language_code FROM users WHERE id = $1", q.from_user.id)
+        if row:
+            lang_code = row["language_code"]
     lang = get_lang(lang_code)
 
-    prompt = (context.user_data.get("prompt") or "").strip()
-
-    # --- NSFW early gate (BEFORE asking count) ---
-    try:
-        row = await get_user_row(pool, q.from_user.id)
-    except Exception:
-        row = None
-    is_premium = _is_premium_row(row)
-
-    triggers = context.application.bot_data.get("nsfw_triggers") or {}
-    nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
-
-    if nsfw_flag:
-        if not is_premium:
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton((lang.get("premium_button") if isinstance(lang, dict) else None) or "⭐ Premium", callback_data="premium")
-            ]])
-            await q.message.reply_text(t(lang, "nsfw_blocked_free"), reply_markup=kb)
-            return
-
-        enh = prompt
-        if NSFW_ENHANCER_SUFFIX:
-            enh = f"{enh}, {NSFW_ENHANCER_SUFFIX}"
-
-        msg = (
-            f"{t(lang,'nsfw_premium_webapp_title')}\n\n"
-            f"{t(lang,'nsfw_premium_webapp_desc')}\n\n"
-            f"{t(lang,'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
-        )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), url=NSFW_WEBAPP_URL)]])
-        await q.message.reply_text(msg, reply_markup=kb, disable_web_page_preview=True)
-        return
-
-    # Normal (SFW): ask count (free=1, premium=1-4)
-    if not is_premium:
-        kb = [[
-            InlineKeyboardButton("1️⃣", callback_data="count_1"),
-            InlineKeyboardButton((lang.get("premium_button") if isinstance(lang, dict) else None) or "⭐ Premium", callback_data="premium"),
-        ]]
-    else:
-        kb = [[
-            InlineKeyboardButton("1️⃣", callback_data="count_1"),
-            InlineKeyboardButton("2️⃣", callback_data="count_2"),
-            InlineKeyboardButton("3️⃣", callback_data="count_3"),
-            InlineKeyboardButton("4️⃣", callback_data="count_4"),
-        ]]
+    prompt = context.user_data.get("prompt", "")
+    kb = [[
+        InlineKeyboardButton("1️⃣", callback_data="count_1"),
+        InlineKeyboardButton("2️⃣", callback_data="count_2"),
+        InlineKeyboardButton("3️⃣", callback_data="count_3"),
+        InlineKeyboardButton("4️⃣", callback_data="count_4")
+    ]]
 
     await q.message.reply_text(
         f"{lang['select_count']}\n{lang.get('your_prompt_label')}\n{escape_md(prompt)}",
         parse_mode="MarkdownV2",
         reply_markup=InlineKeyboardMarkup(kb)
     )
+
+# Yangilangan: context.user_data["flow"] o'rnatiladi
 
 async def ai_chat_from_prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -3496,6 +3430,67 @@ async def admin_unban_inline_handler(update: Update, context: ContextTypes.DEFAU
     await admin_show_user_card(context, user_id, q=q)
 
 #-----------------------------------------------------------------------------------
+ADMIN_PRICE_INPUT_WAIT = 995
+
+async def admin_premium_prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    q = update.callback_query
+    await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    prices = context.application.bot_data.get("premium_prices") or await _load_premium_prices(pool)
+    context.application.bot_data["premium_prices"] = prices
+
+    text = (
+        "💲 Premium Prices (Stars)\n\n"
+        f"• 24h: {prices.get('24h')}⭐\n"
+        f"• 7d:  {prices.get('7d')}⭐\n"
+        f"• 30d: {prices.get('30d')}⭐\n\n"
+        "Choose what to change:"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Set 24h", callback_data="admin_set_price:24h"),
+         InlineKeyboardButton("✏️ Set 7d", callback_data="admin_set_price:7d"),
+         InlineKeyboardButton("✏️ Set 30d", callback_data="admin_set_price:30d")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="admin_settings")]
+    ])
+    await q.edit_message_text(text, reply_markup=kb)
+
+async def admin_set_price_prompt_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    q = update.callback_query
+    await q.answer()
+    plan = q.data.split(":", 1)[1].strip()
+    if plan not in ("24h", "7d", "30d"):
+        return
+    context.user_data["admin_price_plan"] = plan
+    await q.message.reply_text(f"✍️ Send new price for {plan} in Stars (number only):")
+
+async def admin_price_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Runs for admin text messages; only acts when admin_price_plan is set
+    if update.effective_user.id != ADMIN_ID:
+        return
+    plan = context.user_data.get("admin_price_plan")
+    if not plan:
+        return
+    try:
+        value = int((update.message.text or "").strip())
+        if value <= 0 or value > 1000000:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text("❌ Please send a valid number (1..1000000).")
+        return
+
+    pool = context.application.bot_data["db_pool"]
+    key = PREMIUM_PRICE_META_KEYS.get(plan)
+    await _meta_set_int(pool, key, value)
+    prices = await _load_premium_prices(pool)
+    context.application.bot_data["premium_prices"] = prices
+    context.user_data.pop("admin_price_plan", None)
+
+    await update.message.reply_text(f"✅ Updated {plan} price to {value}⭐")
+
 async def admin_settings_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -3503,6 +3498,7 @@ async def admin_settings_handler(update: Update, context: ContextTypes.DEFAULT_T
     await q.answer()
     kb = [
         [InlineKeyboardButton("🔑 Digen Tokenlar", callback_data="admin_manage_tokens")],
+        [InlineKeyboardButton("💲 Premium narxlari", callback_data="admin_premium_prices")],
         [InlineKeyboardButton("🌐 Til sozlamalari", callback_data="admin_lang_editor")],
         [InlineKeyboardButton("📥 DB yuklab olish", callback_data="admin_export_db")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_panel")]
@@ -3937,7 +3933,7 @@ def _ensure_lang_keys():
         "stats_button": "📈 Stats",
         "premium_button": "⭐ Premium",
         "premium_title": "⭐ Premium",
-        "premium_desc": "Unlock NSFW, priority generation, and 4-image batches.\n\nFree users: 1 image/request, cooldown, daily limits, NSFW blocked.",
+        "premium_desc": "✨ Premium = more fun, more freedom, more speed 😈⚡\n\n🔓 Unlock: 🔞🍓 Adult prompts (WebApp flow)\n⚡ Priority queue — skip the line\n🖼 4 images per request (batch)\n🚫 No cooldown\n🧼 No watermark\n\n🆓 Free stays friendly 🙂\n• 1 image/request • cooldown • daily limit • 🔞 blocked\n\nPick a plan below 👇",
         "premium_plan_24h": "24h Pass",
         "premium_plan_7d": "7 Days",
         "premium_plan_30d": "30 Days",
@@ -4007,13 +4003,9 @@ def _ensure_lang_keys():
 
 _ensure_lang_keys()
 
-def t(tr: dict, key: str, **kwargs) -> str:
-    """Safe translation getter with EN fallback.
-
-    Note: first param is named 'tr' (not 'lang') so we can safely call: t(lang, "lang_changed", lang="English")
-    without Python raising "multiple values for argument".
-    """
-    base = tr.get(key) or LANGUAGES.get("en", {}).get(key) or key
+def t(lang: dict, key: str, **kwargs) -> str:
+    """Safe translation getter with EN fallback."""
+    base = lang.get(key) or LANGUAGES.get("en", {}).get(key) or key
     try:
         return base.format(**kwargs) if kwargs else base
     except Exception:
@@ -4315,6 +4307,11 @@ DEFAULT_NSFW_TRIGGERS = {
     ],
 }
 
+
+NSFW_GLOBAL_PATTERNS = sorted(set(
+    sum(DEFAULT_NSFW_TRIGGERS.values(), []) + ['\\bporn\\w*\\b', '\\bp0rn\\w*\\b', '\\bpr0n\\w*\\b', '\\bhentai\\b', '\\bh3ntai\\b', '\\bonlyfans\\b', '\\bonly\\s*fans\\b', '\\bnsfw\\b', '\\bx-?rated\\b', '\\badult\\b', '\\b18\\+\\b', '🔞', '\\bnud(e|ity)\\b', '\\bnaked\\b', '\\btopless\\b', '\\bstrip(ping)?\\b', '\\bsex\\b', '\\bsexy\\b', '\\bsexual\\b', '\\bexplicit\\b', '\\buncensored\\b', '\\bboob(s)?\\b', '\\bbreast(s)?\\b', '\\bbutt\\b', '\\bass\\b', '\\bbooty\\b', '\\bpussy\\b', '\\bvagina\\b', '\\bpenis\\b', '\\bdick\\b', '\\bcock\\b', '\\bblow\\s*job\\b', '\\bhand\\s*job\\b', '\\bmasturbat(e|ion)\\b', '\\borgasm\\b', '\\bcum\\b', '\\bsemen\\b', '\\bsperm\\b', '\\bthreesome\\b', '\\borgy\\b', '\\bпорно\\b', '\\bэрот\\w*\\b', '\\bсекс\\b', '\\bгол(ая|ый)\\b', '\\bобнажен\\w*\\b', '\\bгруд\\w*\\b', '\\bсиськ\\w*\\b', '\\bпенис\\b', '\\bвагин\\w*\\b', '\\bминет\\b', "\\byalang['’]?och\\b", '\\byalangoch\\b', '\\bseks\\b', '\\bporno\\b', '\\berotik\\b', "\\bko['’]?krak\\b", '\\bkokrak\\b', '\\bchi?plak\\b', '\\bçıplak\\b', 'عاري', 'إباحي', 'جنس', 'اباحية', 'नग्न', 'अश्लील', 'पोर्न', 'सेक्स', '\\bdesnud[oa]s?\\b', '\\bporno\\b', '\\bsex(o|ual)\\b', '\\bnu[da]s?\\b', '\\bpelad[oa]s?\\b', '🍓', '🍑', '💦', '👙', '🥵']
+))
+
 # Extra NSFW prompt enhancer (only for PREMIUM allowed NSFW). Adds "spicy" background details.
 NSFW_PROMPT_ENHANCER = (
     "sensual romantic mood, soft bokeh background, cinematic warm lighting, "
@@ -4395,25 +4392,24 @@ async def log_event(pool, user_id: int, event_type: str, meta: dict):
 
 async def ensure_nsfw_defaults(pool):
     """
-    Ensure DEFAULT_NSFW_TRIGGERS exist in DB (idempotent).
+    Idempotent upsert of default NSFW patterns.
 
-    Old DBs may already have some rows, but miss newer keywords like "nude".
-    This function inserts any missing (pattern, locale) pairs safely.
+    Old logic inserted defaults only if table was empty. That caused missing keywords (e.g. "nude")
+    if the table had even one row. We now UPSERT missing patterns safely every startup.
     """
     async with pool.acquire() as conn:
-        for locale, patterns in DEFAULT_NSFW_TRIGGERS.items():
-            for pat in patterns:
-                try:
-                    await conn.execute(
-                        "INSERT INTO nsfw_triggers(pattern, locale, active) "
-                        "SELECT $1, $2, TRUE "
-                        "WHERE NOT EXISTS (SELECT 1 FROM nsfw_triggers WHERE pattern=$1 AND locale=$2)",
-                        pat, locale
-                    )
-                except Exception:
-                    # Don't break startup because of one bad row.
-                    continue
-    logger.info("✅ Default NSFW triggers ensured (upsert).")
+        # Ensure table has all global patterns (stored under locale='global')
+        for pat in NSFW_GLOBAL_PATTERNS:
+            try:
+                await conn.execute(
+                    "INSERT INTO nsfw_triggers(pattern, locale, active) "
+                    "SELECT $1, 'global', TRUE "
+                    "WHERE NOT EXISTS (SELECT 1 FROM nsfw_triggers WHERE pattern=$1 AND locale='global')",
+                    pat
+                )
+            except Exception:
+                continue
+        logger.info("✅ NSFW triggers ensured (upsert global).")
 
 async def load_nsfw_triggers(pool) -> Dict[str, List[re.Pattern]]:
     triggers: Dict[str, List[re.Pattern]] = {}
@@ -4433,54 +4429,21 @@ async def load_nsfw_triggers(pool) -> Dict[str, List[re.Pattern]]:
 
 def is_nsfw_prompt(prompt: str, lang_code: str, triggers: Dict[str, List[re.Pattern]]) -> bool:
     """
-    NSFW detection should NOT depend on user's UI language.
+    Unified NSFW detection:
+    - DO NOT depend on user's UI language.
+    - If a keyword exists in ANY NSFW dictionary/locale, we treat it as NSFW.
 
-    Example: user language = "uz", prompt = "nude" (EN) -> must still match.
-    So we always check:
-      1) user's locale triggers
-      2) English triggers
-      3) then all other locales (so any NSFW keyword in DB triggers WebApp/Paywall)
+    This fixes cases like user language=uz but prompt contains EN word "nude"/"porn".
     """
     p = _normalize_prompt(prompt)
-    locale = (lang_code or "en").lower()
-
-    # Build ordered candidate lists (avoid duplicates)
-    seen = set()
-    candidates: List[re.Pattern] = []
-
-    def _add_list(lst: List[re.Pattern]):
-        for rx in lst or []:
-            rid = id(rx)
-            if rid in seen:
+    # Check all locales (ANY match triggers NSFW)
+    for _loc, lst in (triggers or {}).items():
+        for rx in (lst or []):
+            try:
+                if rx.search(p):
+                    return True
+            except Exception:
                 continue
-            seen.add(rid)
-            candidates.append(rx)
-
-    _add_list(triggers.get(locale, []))
-    if locale != "en":
-        _add_list(triggers.get("en", []))
-
-    # Any other locales (so ANY nsfw keyword triggers, regardless of UI language)
-    for loc, lst in (triggers or {}).items():
-        if loc in (locale, "en"):
-            continue
-        _add_list(lst)
-
-    # Final fallback: in-code defaults (covers cases when DB is empty)
-    if not candidates:
-        try:
-            for loc, pats in DEFAULT_NSFW_TRIGGERS.items():
-                for pat in pats:
-                    candidates.append(re.compile(pat, flags=re.IGNORECASE))
-        except Exception:
-            pass
-
-    for rx in candidates:
-        try:
-            if rx.search(p):
-                return True
-        except Exception:
-            continue
     return False
 
 # ---------------- Premium helpers ----------------
@@ -4787,16 +4750,23 @@ async def gen_worker(app: Application, worker_id: int):
             q.task_done()
 
 # ---------------- Premium UI ----------------
-def premium_keyboard(lang: dict, include_back: bool = True) -> InlineKeyboardMarkup:
-    kb = [
-        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} — {PREMIUM_24H_PRICE_STARS} ⭐", callback_data="premium_buy_24h")],
-        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} — {PREMIUM_7D_PRICE_STARS} ⭐", callback_data="premium_buy_7d")],
-        [InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} — {PREMIUM_30D_PRICE_STARS} ⭐", callback_data="premium_buy_30d")],
-    ]
+def premium_keyboard(lang: dict, prices: dict, include_back: bool = True) -> InlineKeyboardMarkup:
+    """
+    Premium plan keyboard (single row).
+    `prices` is taken from app.bot_data["premium_prices"].
+    """
+    p24 = int(prices.get("24h", PREMIUM_24H_PRICE_STARS))
+    p7  = int(prices.get("7d", PREMIUM_7D_PRICE_STARS))
+    p30 = int(prices.get("30d", PREMIUM_30D_PRICE_STARS))
+
+    kb = [[
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} • {p24}⭐", callback_data="premium_buy_24h"),
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} • {p7}⭐", callback_data="premium_buy_7d"),
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} • {p30}⭐", callback_data="premium_buy_30d"),
+    ]]
     if include_back:
         kb.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
     return InlineKeyboardMarkup(kb)
-
 async def premium_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if q:
@@ -4813,9 +4783,11 @@ async def premium_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     text = f"{t(lang,'premium_title')}\n\n{t(lang,'premium_desc')}\n\n{status_line}"
     if q:
-        await q.edit_message_text(text, reply_markup=premium_keyboard(lang), disable_web_page_preview=True)
+        prices = context.application.bot_data.get('premium_prices', {})
+        await q.edit_message_text(text, reply_markup=premium_keyboard(lang, prices), disable_web_page_preview=True)
     else:
-        await update.message.reply_text(text, reply_markup=premium_keyboard(lang), disable_web_page_preview=True)
+        prices = context.application.bot_data.get('premium_prices', {})
+        await update.message.reply_text(text, reply_markup=premium_keyboard(lang, prices), disable_web_page_preview=True)
 
 async def premium_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -4824,19 +4796,21 @@ async def premium_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     row = await get_user_row(pool, q.from_user.id)
     lang = get_lang((row["language_code"] if row else DEFAULT_LANGUAGE))
 
+    prices = context.application.bot_data.get("premium_prices", {})
     plan = q.data.replace("premium_buy_", "")
+
     if plan == "24h":
-        stars = PREMIUM_24H_PRICE_STARS
+        stars = int(prices.get("24h", PREMIUM_24H_PRICE_STARS))
         title = f"⭐ Premium — {t(lang,'premium_plan_24h')}"
     elif plan == "7d":
-        stars = PREMIUM_7D_PRICE_STARS
+        stars = int(prices.get("7d", PREMIUM_7D_PRICE_STARS))
         title = f"⭐ Premium — {t(lang,'premium_plan_7d')}"
     else:
-        stars = PREMIUM_30D_PRICE_STARS
+        stars = int(prices.get("30d", PREMIUM_30D_PRICE_STARS))
         title = f"⭐ Premium — {t(lang,'premium_plan_30d')}"
 
     payload = f"sub_{q.from_user.id}_{plan}_{int(time.time())}"
-    prices = [LabeledPrice(title, stars)]
+    prices_line = [LabeledPrice(title, stars)]
     await context.bot.send_invoice(
         chat_id=q.message.chat_id,
         title=title,
@@ -4844,11 +4818,9 @@ async def premium_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         payload=payload,
         provider_token="",
         currency="XTR",
-        prices=prices,
+        prices=prices_line,
         is_flexible=False
     )
-
-# ---------------- New generation rules (enqueue + NSFW + limits) ----------------
 async def _consume_free_or_paid(pool, user_id: int) -> Tuple[bool, dict]:
     now = _now_utc()
     start_utc = tashkent_day_start_utc()
@@ -4983,7 +4955,7 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok, info = await _consume_free_or_paid(pool, q.from_user.id)
         if not ok:
             if info.get("reason") == "banned":
-                await q.edit_message_text("⛔ Your account banned.")
+                await q.edit_message_text("⛔ Sizning akkauntingiz ban qilingan.")
                 return
             if info.get("reason") == "cooldown":
                 await q.edit_message_text(t(lang, "cooldown_friendly", sec=int(info.get("sec", 0))))
@@ -5174,12 +5146,62 @@ async def init_db(pool):
 
     await ensure_nsfw_defaults(pool)
 
+# ---------------- Premium prices (dynamic via DB meta) ----------------
+PREMIUM_PRICE_META_KEYS = {
+    "24h": "premium_price_24h",
+    "7d": "premium_price_7d",
+    "30d": "premium_price_30d",
+}
+
+async def _meta_get_int(pool, key: str, default: int) -> int:
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT value FROM meta WHERE key=$1", key)
+            if row and row["value"] is not None:
+                return int(str(row["value"]).strip())
+    except Exception:
+        pass
+    return default
+
+async def _meta_set_int(pool, key: str, value: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO meta(key, value) VALUES($1,$2) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+            key, str(int(value))
+        )
+
+async def _ensure_premium_price_defaults(pool) -> None:
+    # Ensure defaults exist in meta (so admin can edit later)
+    defaults = {
+        PREMIUM_PRICE_META_KEYS["24h"]: PREMIUM_24H_PRICE_STARS,
+        PREMIUM_PRICE_META_KEYS["7d"]: PREMIUM_7D_PRICE_STARS,
+        PREMIUM_PRICE_META_KEYS["30d"]: PREMIUM_30D_PRICE_STARS,
+    }
+    async with pool.acquire() as conn:
+        for k, v in defaults.items():
+            await conn.execute(
+                "INSERT INTO meta(key, value) SELECT $1,$2 "
+                "WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key=$1)",
+                k, str(int(v))
+            )
+
+async def _load_premium_prices(pool) -> dict:
+    await _ensure_premium_price_defaults(pool)
+    return {
+        "24h": await _meta_get_int(pool, PREMIUM_PRICE_META_KEYS["24h"], PREMIUM_24H_PRICE_STARS),
+        "7d": await _meta_get_int(pool, PREMIUM_PRICE_META_KEYS["7d"], PREMIUM_7D_PRICE_STARS),
+        "30d": await _meta_get_int(pool, PREMIUM_PRICE_META_KEYS["30d"], PREMIUM_30D_PRICE_STARS),
+    }
+
 async def on_startup(app: Application):
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=6)
     app.bot_data["db_pool"] = pool
     await init_db(pool)
 
+    await ensure_nsfw_defaults(pool)
     app.bot_data["nsfw_triggers"] = await load_nsfw_triggers(pool)
+    app.bot_data["premium_prices"] = await _load_premium_prices(pool)
     app.bot_data["gen_queue"] = asyncio.PriorityQueue()
     app.bot_data["active_users"] = set()
     app.bot_data["queue_seq"] = itertools.count()
@@ -5211,6 +5233,8 @@ def build_app():
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CallbackQueryHandler(admin_ban_unban_menu_handler, pattern="^admin_ban_unban_menu$"))
     app.add_handler(CallbackQueryHandler(admin_settings_handler, pattern="^admin_settings$"))
+    app.add_handler(CallbackQueryHandler(admin_premium_prices_handler, pattern="^admin_premium_prices$"))
+    app.add_handler(CallbackQueryHandler(admin_set_price_prompt_cb, pattern=r"^admin_set_price:(24h|7d|30d)$"))
     app.add_handler(CallbackQueryHandler(admin_manage_tokens_handler, pattern="^admin_manage_tokens$"))
     app.add_handler(CallbackQueryHandler(admin_lang_editor_handler, pattern="^admin_lang_editor$"))
     app.add_handler(CallbackQueryHandler(admin_export_db_handler, pattern="^admin_export_db$"))
@@ -5221,6 +5245,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(admin_ban_inline_handler, pattern=r"^admin_ban_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_unban_inline_handler, pattern=r"^admin_unban_\d+$"))
     app.add_handler(
+        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_price_input_handler),
         MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_user_search_handler),
         group=5
     )
@@ -5717,8 +5742,7 @@ def _main_menu_kb(lang: dict, user_id: int) -> InlineKeyboardMarkup:
          InlineKeyboardButton(lang["donate_button"], callback_data="donate_custom")],
         [InlineKeyboardButton("🎨 Random AI Anime", callback_data="random_anime"),
          InlineKeyboardButton("🧪 FakeLab", callback_data="fake_lab_new")],
-        [InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats"),
-         InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
+        [InlineKeyboardButton(t(lang, "stats_button"), callback_data="show_stats")],
     ]
     if user_id == ADMIN_ID:
         kb.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
@@ -5879,13 +5903,23 @@ async def profile_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         paid_left = int((row["extra_credits"] if row else 0) or 0)
     except Exception:
         paid_left = 0
-    if (not is_prem) and paid_left > 0:
-        text += "\n" + t(lang, "profile_paid_left", n=paid_left)
+def premium_keyboard(lang: dict, prices: dict, include_back: bool = True) -> InlineKeyboardMarkup:
+    """
+    Premium plan keyboard (single row).
+    `prices` is taken from app.bot_data["premium_prices"].
+    """
+    p24 = int(prices.get("24h", PREMIUM_24H_PRICE_STARS))
+    p7  = int(prices.get("7d", PREMIUM_7D_PRICE_STARS))
+    p30 = int(prices.get("30d", PREMIUM_30D_PRICE_STARS))
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,"back_to_main_button"), callback_data="back_to_main")]])
-    await q.edit_message_text(text[:4096], reply_markup=kb)
-
-# --- Premium buttons in ONE ROW (requested) ---
+    kb = [[
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} • {p24}⭐", callback_data="premium_buy_24h"),
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} • {p7}⭐", callback_data="premium_buy_7d"),
+        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} • {p30}⭐", callback_data="premium_buy_30d"),
+    ]]
+    if include_back:
+        kb.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
+    return InlineKeyboardMarkup(kb)
 def premium_keyboard(lang: dict, include_back: bool = True) -> InlineKeyboardMarkup:
     kb = [[
         InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} — {PREMIUM_24H_PRICE_STARS} ⭐", callback_data="premium_buy_24h"),
