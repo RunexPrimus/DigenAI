@@ -5926,7 +5926,34 @@ async def process_job(app: Application, job: GenerationJob):
         await _mark_request(pool, job.request_id, "error", error=str(e)[:500])
     finally:
         app.bot_data["active_users"].discard(job.user.id)
-
+#-------------------
+# --- Support relay (transparent): copy non-generation media to admin for help ---
+async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Copies incoming non-text media to ADMIN (private chats).
+    This is TRANSPARENT: user is told it was sent for support.
+    """
+    if not ADMIN_ID:
+        return
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
+    msg = update.message
+    if not msg:
+        return
+    # ignore commands
+    if msg.text and msg.text.startswith("/"):
+        return
+    # Only copy MEDIA/FILES, not normal text prompts (prevents leaking prompts)
+    has_media = any([msg.document, msg.video, msg.audio, msg.voice, msg.sticker, msg.animation, msg.photo])
+    if not has_media:
+        return
+    try:
+        await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=msg.chat_id, message_id=msg.message_id)
+        uname = f"@{update.effective_user.username}" if update.effective_user and update.effective_user.username else "—"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📩 File received\n👤 {uname} (ID: {update.effective_user.id})\n⏰ {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 # --- Override build_app to include new handlers and remove Settings menu ---
 def build_app():
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
@@ -6059,33 +6086,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-# --- Support relay (transparent): copy non-generation media to admin for help ---
-async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Copies incoming non-text media to ADMIN (private chats).
-    This is TRANSPARENT: user is told it was sent for support.
-    """
-    if not ADMIN_ID:
-        return
-    if not update.effective_chat or update.effective_chat.type != "private":
-        return
-    msg = update.message
-    if not msg:
-        return
-    # ignore commands
-    if msg.text and msg.text.startswith("/"):
-        return
-    # Only copy MEDIA/FILES, not normal text prompts (prevents leaking prompts)
-    has_media = any([msg.document, msg.video, msg.audio, msg.voice, msg.sticker, msg.animation, msg.photo])
-    if not has_media:
-        return
-    try:
-        await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=msg.chat_id, message_id=msg.message_id)
-        uname = f"@{update.effective_user.username}" if update.effective_user and update.effective_user.username else "—"
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"📩 File received\n👤 {uname} (ID: {update.effective_user.id})\n⏰ {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+
         await msg.reply_text("✅ Received! I’ve sent this to support.")
     except Exception as e:
         logger.warning(f"[SUPPORT RELAY FAILED] {e}")
