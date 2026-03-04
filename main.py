@@ -37,8 +37,7 @@ logger = logging.getLogger(__name__)
 # ---------------- STATES ----------------
 BAN_STATE = 1
 UNBAN_STATE = 2
-BROADCAST_STATE = 3
-DONATE_WAITING_AMOUNT = 4
+# BROADCAST_STATE va DONATE_WAITING_AMOUNT quyida to'g'ri qiymatlari bilan aniqlanadi
 # ---------------- ENV ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
@@ -61,7 +60,10 @@ if ADMIN_ID == 0:
     raise SystemExit(1)
 AI_CHAT_ENABLED = False  # Chat with AI removed
 # ---------------- STATE ----------------
-LANGUAGE_SELECT, DONATE_WAITING_AMOUNT = range(2)
+# Fixed: DONATE and LANGUAGE states must not clash with BAN=1, UNBAN=2, BROADCAST=3
+LANGUAGE_SELECT = 10
+DONATE_WAITING_AMOUNT = 11
+BROADCAST_STATE = 3  # Canonical value (was redefined as 101 later — removed)
 
 # ---------------- Til sozlamalari ----------------
 # Yangilangan: Yangi matn kalitlari qo'shildi
@@ -1830,6 +1832,20 @@ async def init_db(pool):
         except Exception as e:
             logger.info(f"ℹ️ Columns already exist or error: {e}")
 
+        # Performance: create indexes for hot query paths
+        _indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_generations_user_created ON generations(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_generations_user_premium ON generations(user_id, is_premium)",
+            "CREATE INDEX IF NOT EXISTS idx_users_id ON users(id)",
+            "CREATE INDEX IF NOT EXISTS idx_requests_user ON requests(user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_logs_user ON logs(user_id, created_at DESC)",
+        ]
+        for idx_sql in _indexes:
+            try:
+                await conn.execute(idx_sql)
+            except Exception:
+                pass
+
 # ---------------- Digen headers ----------------
 import threading
 
@@ -1924,37 +1940,29 @@ async def check_sub_button_handler(update: Update, context: ContextTypes.DEFAULT
 
 # ---------------- DB user/session/logging ----------------
 async def add_user_db(pool, tg_user, lang_code=None, image_model_id=None):
+    """Upsert user row. Single query — no SELECT round-trip."""
     now = utc_now()
+    lc = lang_code or DEFAULT_LANGUAGE
+    im = image_model_id or ""
+    uname = tg_user.username if tg_user.username else None
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT id FROM users WHERE id = $1", tg_user.id)
-        if row:
-            updates = []
-            params = []
-            idx = 1
-            if lang_code is not None:
-                updates.append(f"language_code=${idx}")
-                params.append(lang_code)
-                idx += 1
-            if image_model_id is not None:
-                updates.append(f"image_model_id=${idx}")
-                params.append(image_model_id)
-                idx += 1
-            updates.append(f"username=${idx}")
-            updates.append(f"last_seen=${idx+1}")
-            params.extend([tg_user.username if tg_user.username else None, now, tg_user.id])
-            if updates:
-                query = f"UPDATE users SET {', '.join(updates)} WHERE id=${len(params)}"
-                await conn.execute(query, *params)
-        else:
-            lang_code = lang_code or DEFAULT_LANGUAGE
-            image_model_id = image_model_id or ""
-            await conn.execute(
-                "INSERT INTO users(id, username, first_seen, last_seen, language_code, image_model_id) "
-                "VALUES($1,$2,$3,$4,$5,$6)",
-                tg_user.id, tg_user.username if tg_user.username else None,
-                now, now, lang_code, image_model_id
-            )
-        await conn.execute("INSERT INTO sessions(user_id, started_at) VALUES($1,$2)", tg_user.id, now)
+        await conn.execute(
+            """
+            INSERT INTO users(id, username, first_seen, last_seen, language_code, image_model_id)
+            VALUES($1, $2, $3, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE SET
+                username = EXCLUDED.username,
+                last_seen = EXCLUDED.last_seen
+                """ + (", language_code = EXCLUDED.language_code" if lang_code is not None else "") +
+                (", image_model_id = EXCLUDED.image_model_id" if image_model_id is not None else "") + """
+            """,
+            tg_user.id, uname, now, lc, im
+        )
+        # Session insert — fire-and-forget, ignore errors
+        try:
+            await conn.execute("INSERT INTO sessions(user_id, started_at) VALUES($1,$2)", tg_user.id, now)
+        except Exception:
+            pass
 
 async def log_generation(pool, tg_user, prompt, translated, image_id, count):
     now = utc_now()
@@ -3505,7 +3513,7 @@ async def admin_settings_handler(update: Update, context: ContextTypes.DEFAULT_T
     ]
     await q.edit_message_text("⚙️ *Sozlamalar*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 #-------------------------------------------------------------------------------------
-BROADCAST_STATE = 101
+# BROADCAST_STATE is defined globally above as 3 — do not redefine here
 
 async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -3900,6 +3908,9 @@ try:
 except Exception:
     _PIL_OK = False
 
+# Shared HTTP session for digen API calls (set in on_startup, None until then)
+_digen_http_session: Optional[aiohttp.ClientSession] = None
+
 # ---------------- Premium / Limits config ----------------
 # Backward compatibility: if DAILY_FREE_IMAGES env exists, we treat it as FREE_DAILY_REQUESTS for Free(1 img/request).
 FREE_DAILY_REQUESTS = int(os.getenv("FREE_DAILY_REQUESTS", os.getenv("DAILY_FREE_IMAGES", "15")))
@@ -3957,6 +3968,9 @@ def _ensure_lang_keys():
         "nsfw_premium_webapp_title": "✅ Accepted!",
         "nsfw_premium_webapp_desc": "Because of Telegram rules, adult generation continues in our Web App. Tap the button below 👇",
         "nsfw_webapp_button": "🌐 Continue in Web App",
+        "nsfw_continue_in_bot_button": "🤖 Continue in Bot",
+        "nsfw_choice_title": "🔞 NSFW Request Detected",
+        "nsfw_choice_desc": "Choose where to generate your adult image:",
         "nsfw_enhanced_label": "📝 Enhanced prompt:",
         "inline_choose_count": "🔢 Choose image count:",
         "inline_result_title": "🎨 Generate {n} image(s)",
@@ -3991,8 +4005,9 @@ def _ensure_lang_keys():
         "profile_button": "👤 Profil",
         "style_button": "🎛 Image Style",
         "nsfw_premium_webapp_title": "✅ Qabul qilindi!",
-        "nsfw_premium_webapp_desc": "Telegram qoidalari sababli adult generatsiya Web App’da davom etadi. Pastdagi tugmani bosing 👇",
+        "nsfw_premium_webapp_desc": "Telegram qoidalari sababli adult kontent Web App’da davom etadi. Yoki toʻgʻridan-toʻgʻridan botda generatsiya qilishingiz mumkin.",
         "nsfw_webapp_button": "🌐 Web App’da davom ettirish",
+        "nsfw_bot_button": "🤖 Botda davom ettirish",
         "nsfw_enhanced_label": "📝 Kuchaytirilgan prompt:",
         "inline_choose_count": "🔢 Nechta rasm?",
         "inline_result_title": "🎨 {n} ta rasm yaratish",
@@ -4000,6 +4015,31 @@ def _ensure_lang_keys():
         "inline_processing": "🔄 So‘rov bajarilmoqda… ({n})",
 
     })
+
+    # Add nsfw_bot_button to ALL remaining languages
+    _NSFW_BOT_TRANSLATIONS = {
+        "ru": ("🤖 Продолжить в боте", "Из-за правил Telegram adult-контент доступен через Web App. Или вы можете генерировать прямо в боте."),
+        "id": ("🤖 Lanjutkan di Bot", "Karena aturan Telegram, konten dewasa tersedia di Web App. Atau Anda bisa generate langsung di bot."),
+        "lt": ("🤖 Tęsti bote", "Dėl Telegram taisyklių suaugusiųjų turinys pasiekiamas per Web App. Arba galite generuoti tiesiai bote."),
+        "esmx": ("🤖 Continuar en el Bot", "Debido a las reglas de Telegram, el contenido adulto está en Web App. O puedes generar directamente en el bot."),
+        "eses": ("🤖 Continuar en el Bot", "Debido a las reglas de Telegram, el contenido adulto está en Web App. O puedes generar directamente en el bot."),
+        "it": ("🤖 Continua nel Bot", "A causa delle regole di Telegram, i contenuti adulti sono su Web App. Oppure puoi generare direttamente nel bot."),
+        "zhcn": ("🤖 在机器人中继续", "由于 Telegram 规则，成人内容可在 Web App 中生成。或者您可以直接在机器人中生成。"),
+        "bn": ("🤖 বটে চালিয়ে যান", "Telegram নিয়মের কারণে প্রাপ্তবয়স্ক কন্টেন্ট Web App-এ পাওয়া যায়। অথবা সরাসরি বটে তৈরি করতে পারেন।"),
+        "hi": ("🤖 बॉट में जारी रखें", "Telegram के नियमों के कारण adult सामग्री Web App में उपलब्ध है। या आप सीधे बॉट में बना सकते हैं।"),
+        "ptbr": ("🤖 Continuar no Bot", "Devido às regras do Telegram, conteúdo adulto está no Web App. Ou você pode gerar diretamente no bot."),
+        "ar": ("🤖 المتابعة في البوت", "بسبب قواعد تيليغرام، المحتوى للبالغين متاح في تطبيق الويب. أو يمكنك التوليد مباشرة في البوت."),
+        "uk": ("🤖 Продовжити в боті", "Через правила Telegram контент для дорослих доступний у Web App. Або ви можете генерувати прямо в боті."),
+        "vi": ("🤖 Tiếp tục trong Bot", "Do quy tắc Telegram, nội dung người lớn có trong Web App. Hoặc bạn có thể tạo trực tiếp trong bot."),
+    }
+    for lc, (btn_text, desc_text) in _NSFW_BOT_TRANSLATIONS.items():
+        ld = LANGUAGES.get(lc)
+        if ld is not None:
+            ld.setdefault("nsfw_bot_button", btn_text)
+            ld.setdefault("nsfw_premium_webapp_desc", desc_text)
+            ld.setdefault("nsfw_webapp_button", "🌐 Continue in Web App")
+            ld.setdefault("nsfw_premium_webapp_title", "✅ Accepted!")
+            ld.setdefault("nsfw_enhanced_label", "📝 Enhanced prompt:")
 
 _ensure_lang_keys()
 
@@ -4569,11 +4609,19 @@ async def digen_generate_urls(pool, user_id: int, prompt: str, translated: str, 
     }
     headers = get_digen_headers()
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=500)) as session:
-        async with session.post(DIGEN_URL, headers=headers, json=payload) as resp:
+    # Use shared http_session if available (performance: avoids per-request session creation)
+    _http = _digen_http_session
+    _own = _http is None
+    if _own:
+        _http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=520))
+    try:
+        async with _http.post(DIGEN_URL, headers=headers, json=payload) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"DIGEN status={resp.status} body={await resp.text()}")
             data = await resp.json()
+    finally:
+        if _own:
+            await _http.close()
 
     image_id = (data.get("data") or {}).get("id") or data.get("id")
     if not image_id:
@@ -4582,25 +4630,33 @@ async def digen_generate_urls(pool, user_id: int, prompt: str, translated: str, 
     image_id_clean = str(image_id).strip()
     urls = [f"https://liveme-image.s3.amazonaws.com/{image_id_clean}-{i}.jpeg".strip() for i in range(count)]
 
-    # readiness check
+    # readiness check — reuse shared session for all polls
     first = urls[0]
     ready = False
-    for _ in range(60):
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
-                async with s.head(first, allow_redirects=True) as head:
+    _poll = _digen_http_session
+    _own_poll = _poll is None
+    if _own_poll:
+        _poll = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+    try:
+        for _ in range(60):
+            try:
+                async with _poll.head(first, allow_redirects=True) as head:
                     if head.status == 200:
                         ready = True
                         break
-        except Exception:
-            pass
-        await asyncio.sleep(2)
-
-    if not ready:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
-            async with s.get(first, allow_redirects=True) as get:
-                if get.status == 200:
-                    ready = True
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+        if not ready:
+            try:
+                async with _poll.get(first, allow_redirects=True) as get:
+                    if get.status == 200:
+                        ready = True
+            except Exception:
+                pass
+    finally:
+        if _own_poll:
+            await _poll.close()
 
     if not ready:
         raise TimeoutError("Image readiness timeout")
@@ -4714,15 +4770,17 @@ async def process_job(app: Application, job: GenerationJob):
         await log_generation(pool, job.user, job.prompt, job.translated_prompt, image_id, job.count, job.is_premium, job.nsfw_flag)
         await _mark_request(pool, job.request_id, "done")
 
-        # Simple admin notify
+        # Admin notify — fire-and-forget (generatsiyani sekinlashtirmaydi)
         if ADMIN_ID:
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"🖼 Generation done\nuser={job.user.id} @{job.user.username}\ncount={job.count} premium={job.is_premium} nsfw={job.nsfw_flag}\n{job.prompt[:700]}\n{urls[0]}"
-                )
-            except Exception:
-                pass
+            async def _admin_notify():
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🖼 Generation done\nuser={job.user.id} @{job.user.username}\ncount={job.count} premium={job.is_premium} nsfw={job.nsfw_flag}\n{job.prompt[:700]}\n{urls[0]}"
+                    )
+                except Exception:
+                    pass
+            asyncio.create_task(_admin_notify())
 
     except Exception as e:
         logger.exception(f"[JOB ERROR] {e}")
@@ -4741,13 +4799,23 @@ async def process_job(app: Application, job: GenerationJob):
 async def gen_worker(app: Application, worker_id: int):
     q: asyncio.PriorityQueue = app.bot_data["gen_queue"]
     active: set = app.bot_data["active_users"]
+    logger.info(f"🔧 Worker #{worker_id} ishga tushdi")
     while True:
-        pr, seq, job = await q.get()
         try:
-            await process_job(app, job)
-        finally:
-            active.discard(job.user.id)
-            q.task_done()
+            pr, seq, job = await q.get()
+            try:
+                await process_job(app, job)
+            except Exception as e:
+                logger.error(f"[Worker#{worker_id}] job xatosi: {e}")
+            finally:
+                active.discard(job.user.id)
+                q.task_done()
+        except asyncio.CancelledError:
+            logger.info(f"🛑 Worker #{worker_id} to'xtatildi")
+            break
+        except Exception as e:
+            logger.error(f"[Worker#{worker_id}] kutilmagan xato: {e}")
+            await asyncio.sleep(1)  # Tezkor loop oldini olish
 
 # ---------------- Premium UI ----------------
 def premium_keyboard(lang: dict, prices: dict, include_back: bool = True) -> InlineKeyboardMarkup:
@@ -4910,7 +4978,7 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     triggers = app.bot_data.get("nsfw_triggers") or {}
     nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
 
-    # Premium + NSFW: accept but continue in Web App (Telegram rules) (requested)
+    # Premium + NSFW: user chooses — WebApp OR generate directly in bot
     if nsfw_flag and is_premium:
         try:
             enh = prompt.strip()
@@ -4922,13 +4990,14 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{t(lang,'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
             )
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t(lang,'nsfw_webapp_button'), url=NSFW_WEBAPP_URL)],
+                [InlineKeyboardButton(t(lang,'nsfw_webapp_button'), url=NSFW_WEBAPP_URL),
+                 InlineKeyboardButton(t(lang,'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
                 [InlineKeyboardButton(t(lang,'back_to_main_button'), callback_data='back_to_main')]
             ])
             await q.edit_message_text(msg, reply_markup=kb, disable_web_page_preview=True)
         except Exception:
             await q.edit_message_text(t(lang,'nsfw_premium_webapp_desc'))
-        await log_event(pool, q.from_user.id, "nsfw_premium_webapp", {"prompt": prompt})
+        await log_event(pool, q.from_user.id, "nsfw_premium_choice_shown", {"prompt": prompt[:500]})
         return
 
     if nsfw_flag and not is_premium:
@@ -5195,7 +5264,13 @@ async def _load_premium_prices(pool) -> dict:
     }
 
 async def on_startup(app: Application):
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=6)
+    pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=2,
+        max_size=max(10, WORKER_COUNT * 3),  # Worker soni bilan moslashtirildi
+        command_timeout=30,
+        max_inactive_connection_lifetime=300,
+    )
     app.bot_data["db_pool"] = pool
     await init_db(pool)
 
@@ -5210,6 +5285,16 @@ async def on_startup(app: Application):
     for wid in range(WORKER_COUNT):
         app.create_task(gen_worker(app, wid))
 
+    # Shared aiohttp session — bitta session butun bot uchun (performance: session qo'shish/o'chirish xarajati yo'q)
+    shared_session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=520),
+        connector=aiohttp.TCPConnector(limit=64, limit_per_host=32, ttl_dns_cache=300),
+    )
+    app.bot_data["http_session"] = shared_session
+    # digen API uchun global reference
+    global _digen_http_session
+    _digen_http_session = shared_session
+
     logger.info(f"✅ Startup complete. Workers={WORKER_COUNT}")
 
 async def on_shutdown(app: Application):
@@ -5219,172 +5304,12 @@ async def on_shutdown(app: Application):
             await pool.close()
     except Exception:
         pass
-
-# ---------------- MAIN (updated) ----------------
-def build_app():
-    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
-    all_lang_pattern = r"lang_(uz|ru|en|id|lt|esmx|eses|it|zhcn|bn|hi|ptbr|ar|uk|vi)"
-
-    # Admin
-    app.add_handler(CallbackQueryHandler(admin_stats_handler, pattern="^admin_stats$"))
-    app.add_handler(CallbackQueryHandler(admin_panel_handler, pattern="^admin_panel$"))
-    app.add_handler(CallbackQueryHandler(admin_users_list_handler, pattern=r"^admin_users_list_\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_user_search_prompt_handler, pattern="^admin_user_search_prompt$"))
-    app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CallbackQueryHandler(admin_ban_unban_menu_handler, pattern="^admin_ban_unban_menu$"))
-    app.add_handler(CallbackQueryHandler(admin_settings_handler, pattern="^admin_settings$"))
-    app.add_handler(CallbackQueryHandler(admin_premium_prices_handler, pattern="^admin_premium_prices$"))
-    app.add_handler(CallbackQueryHandler(admin_set_price_prompt_cb, pattern=r"^admin_set_price:(24h|7d|30d)$"))
-    app.add_handler(CallbackQueryHandler(admin_manage_tokens_handler, pattern="^admin_manage_tokens$"))
-    app.add_handler(CallbackQueryHandler(admin_lang_editor_handler, pattern="^admin_lang_editor$"))
-    app.add_handler(CallbackQueryHandler(admin_export_db_handler, pattern="^admin_export_db$"))
-    app.add_handler(CallbackQueryHandler(admin_refund_menu_handler, pattern="^admin_refund_menu$"))
-    app.add_handler(CallbackQueryHandler(admin_refund_do_handler, pattern=r"^admin_refund_\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_user_stats_handler, pattern=r"^admin_user_stats_\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_usercard_handler, pattern=r"^admin_usercard_\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_ban_inline_handler, pattern=r"^admin_ban_\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_unban_inline_handler, pattern=r"^admin_unban_\d+$"))
-    app.add_handler(
-        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_price_input_handler),
-        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_user_search_handler),
-        group=5
-    )
-
-    # Premium
-    app.add_handler(CallbackQueryHandler(premium_menu_handler, pattern="^premium_menu$"))
-    app.add_handler(CallbackQueryHandler(premium_buy_handler, pattern=r"^premium_buy_(24h|7d|30d)$"))
-
-    # Stats & start
-    app.add_handler(CommandHandler("stats", cmd_public_stats))
-    app.add_handler(CallbackQueryHandler(settings_menu, pattern="^back_to_settings$"))
-    app.add_handler(CallbackQueryHandler(start_handler, pattern="^back_to_main$"))
-    app.add_handler(CallbackQueryHandler(fake_lab_new_handler, pattern="^fake_lab_new$"))
-    app.add_handler(CallbackQueryHandler(fake_lab_refresh_handler, pattern="^fake_lab_refresh$"))
-    app.add_handler(CallbackQueryHandler(show_stats_handler, pattern="^show_stats$"))
-    app.add_handler(CommandHandler("start", start_handler))
-
-    # Language
-    app.add_handler(CommandHandler("language", cmd_language))
-    app.add_handler(CallbackQueryHandler(cmd_language, pattern="^change_language$"))
-    app.add_handler(CallbackQueryHandler(language_select_handler, pattern=all_lang_pattern))
-
-    # Settings / Model selection
-    app.add_handler(CallbackQueryHandler(settings_menu, pattern="^open_settings$"))
-    app.add_handler(CallbackQueryHandler(select_image_model, pattern="^select_image_model$"))
-    app.add_handler(CallbackQueryHandler(confirm_model_selection, pattern=r"^confirm_model_.*$"))
-    app.add_handler(CallbackQueryHandler(set_image_model, pattern=r"^set_model_.*$"))
-
-    # Fun
-    app.add_handler(CallbackQueryHandler(random_anime_handler, pattern="^random_anime$"))
-    app.add_handler(CallbackQueryHandler(random_anime_refresh_handler, pattern="^random_anime_refresh$"))
-
-    # Donate
-    donate_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(donate_start, pattern="^donate_custom$")],
-        states={DONATE_WAITING_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, donate_amount)]},
-        fallbacks=[],
-        per_message=False
-    )
-    app.add_handler(donate_conv)
-
-    # Admin conversations
-    ban_unban_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(admin_ban_start, pattern="^admin_ban_start$"),
-            CallbackQueryHandler(admin_unban_start, pattern="^admin_unban_start$"),
-        ],
-        states={
-            BAN_STATE: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_ban_confirm)],
-            UNBAN_STATE: [MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_unban_confirm)],
-        },
-        fallbacks=[],
-        per_message=False
-    )
-    app.add_handler(ban_unban_conv)
-
-    sendmsg_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_sendmsg_start, pattern=r"^admin_sendmsg_\d+$")],
-        states={ADMIN_SENDMSG_STATE: [MessageHandler(filters.ALL & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_sendmsg_send)]},
-        fallbacks=[],
-        per_message=False
-    )
-    app.add_handler(sendmsg_conv)
-
-    broadcast_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_broadcast_start, pattern=r"^(admin_broadcast|admin_broadcast_menu)$")],
-        states={BROADCAST_STATE: [MessageHandler(filters.ALL & ~filters.COMMAND, admin_broadcast_send)]},
-        fallbacks=[]
-    )
-    app.add_handler(broadcast_conv)
-
-    app.add_handler(CallbackQueryHandler(admin_channels_handler, pattern="^admin_channels$"))
-
-    # Core flow
-    app.add_handler(CallbackQueryHandler(handle_start_gen, pattern="^start_gen$"))
-    app.add_handler(CallbackQueryHandler(check_sub_button_handler, pattern="^check_sub$"))
-    app.add_handler(CallbackQueryHandler(generate_cb, pattern=r"^count_\d+$"))
-    app.add_handler(CallbackQueryHandler(buy_pack_handler, pattern=r"^buy_pack_\d+$"))
-    app.add_handler(CallbackQueryHandler(gen_image_from_prompt_handler, pattern="^gen_image_from_prompt$"))
-
-    # Commands
-    app.add_handler(CommandHandler("get", cmd_get))
-    app.add_handler(CommandHandler("refund", cmd_refund))
-
-    # Payments
-    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-
-    # Text
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_handler))
-
-    app.add_error_handler(on_error)
-    return app
-
-
-async def forward_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Forward/copy ANY user content to admin (requested): files, photos, videos, text, etc."""
-    if not ADMIN_ID:
-        return
-    msg = update.effective_message
-    if not msg:
-        return
-    # Avoid looping: don't forward admin's own messages
-    if update.effective_user and update.effective_user.id == ADMIN_ID:
-        return
-    # Only forward user-generated content (ignore service messages)
     try:
-        # Copy keeps media and captions, without "Forwarded from"
-        await context.bot.copy_message(
-            chat_id=ADMIN_ID,
-            from_chat_id=msg.chat_id,
-            message_id=msg.message_id
-        )
-        # Add context line (who/where) as separate message for clarity
-        u = update.effective_user
-        chat = update.effective_chat
-        uname = f"@{u.username}" if u and u.username else (u.full_name if u else "Unknown")
-        where = f"{chat.type}:{chat.id}" if chat else "unknown"
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"📥 Incoming from {uname} (ID: {u.id if u else '—'}) | chat={where}"
-        )
-    except Exception as e:
-        logger.warning("Forward to admin failed: %s", e)
-
-def main():
-    app = build_app()
-    logger.info("Application initialized. Starting polling...")
-        # Forward any user content to admin
-    app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, forward_to_admin), group=99)
-
-    app.run_polling()
-
-
-# ===================== UX & FEATURE PATCH (Soft UI + Profile + Image Style + Inline + Admin Album + Caption Safe) =====================
-# This block overrides some functions below to meet the latest UX requirements WITHOUT breaking legacy code.
-
-from telegram import InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import InlineQueryHandler, ChosenInlineResultHandler
+        sess = app.bot_data.get("http_session")
+        if sess and not sess.closed:
+            await sess.close()
+    except Exception:
+        pass
 
 # --- i18n patch: soft copy + profile + image style (all languages) ---
 STYLE_KEYS = [
@@ -5903,33 +5828,6 @@ async def profile_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         paid_left = int((row["extra_credits"] if row else 0) or 0)
     except Exception:
         paid_left = 0
-def premium_keyboard(lang: dict, prices: dict, include_back: bool = True) -> InlineKeyboardMarkup:
-    """
-    Premium plan keyboard (single row).
-    `prices` is taken from app.bot_data["premium_prices"].
-    """
-    p24 = int(prices.get("24h", PREMIUM_24H_PRICE_STARS))
-    p7  = int(prices.get("7d", PREMIUM_7D_PRICE_STARS))
-    p30 = int(prices.get("30d", PREMIUM_30D_PRICE_STARS))
-
-    kb = [[
-        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} • {p24}⭐", callback_data="premium_buy_24h"),
-        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} • {p7}⭐", callback_data="premium_buy_7d"),
-        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} • {p30}⭐", callback_data="premium_buy_30d"),
-    ]]
-    if include_back:
-        kb.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
-    return InlineKeyboardMarkup(kb)
-def premium_keyboard(lang: dict, include_back: bool = True) -> InlineKeyboardMarkup:
-    kb = [[
-        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_24h')} — {PREMIUM_24H_PRICE_STARS} ⭐", callback_data="premium_buy_24h"),
-        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_7d')} — {PREMIUM_7D_PRICE_STARS} ⭐", callback_data="premium_buy_7d"),
-        InlineKeyboardButton(f"⭐ {t(lang,'premium_plan_30d')} — {PREMIUM_30D_PRICE_STARS} ⭐", callback_data="premium_buy_30d"),
-    ]]
-    if include_back:
-        kb.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
-    return InlineKeyboardMarkup(kb)
-
 # --- Apply Style addon inside digen_generate_urls by wrapping (keeps legacy) ---
 _digen_generate_urls_original = digen_generate_urls
 
@@ -6109,6 +6007,29 @@ async def generate_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     triggers = app.bot_data.get("nsfw_triggers") or {}
     nsfw_flag = is_nsfw_prompt(prompt, lang_code, triggers)
+
+    # Premium + NSFW: user chooses — WebApp OR generate directly in bot
+    if nsfw_flag and is_premium:
+        try:
+            enh = prompt.strip()
+            if NSFW_ENHANCER_SUFFIX:
+                enh = f"{enh}, {NSFW_ENHANCER_SUFFIX}"
+            msg = (
+                f"{t(lang, 'nsfw_premium_webapp_title')}\n\n"
+                f"{t(lang, 'nsfw_premium_webapp_desc')}\n\n"
+                f"{t(lang, 'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(t(lang, 'nsfw_webapp_button'), url=NSFW_WEBAPP_URL),
+                 InlineKeyboardButton(t(lang, 'nsfw_bot_button'), callback_data=f"nsfw_bot_{count}")],
+                [InlineKeyboardButton(t(lang, 'back_to_main_button'), callback_data='back_to_main')]
+            ])
+            await q.edit_message_text(msg, reply_markup=kb, disable_web_page_preview=True)
+        except Exception:
+            await q.edit_message_text(t(lang, 'nsfw_premium_webapp_desc'))
+        await log_event(pool, q.from_user.id, "nsfw_premium_choice_shown", {"prompt": prompt[:500]})
+        return
+
     if nsfw_flag and not is_premium:
         kb = [
             [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu")],
@@ -6323,6 +6244,7 @@ async def chosen_inline_result_handler(update: Update, context: ContextTypes.DEF
                 f"{t(lang,'nsfw_enhanced_label')}\n{_clip(enh, 3500)}"
             )
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang,'nsfw_webapp_button'), url=NSFW_WEBAPP_URL)]])
+            # Note: inline mode can't use nsfw_bot_button (no callback in inline) — WebApp only
             await context.bot.edit_message_text(inline_message_id=inline_message_id, text=msg, reply_markup=kb, disable_web_page_preview=True)
         except Exception:
             pass
@@ -6520,6 +6442,78 @@ async def process_job(app: Application, job: GenerationJob):
         await _mark_request(pool, job.request_id, "error", error=str(e)[:500])
     finally:
         app.bot_data["active_users"].discard(job.user.id)
+
+# --- NSFW "Continue in Bot" handler ---
+async def nsfw_continue_bot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Called when premium user clicks "Continue in Bot" on the NSFW choice message.
+    Reads count from callback_data (nsfw_bot_<count>), then enqueues the job directly.
+    """
+    q = update.callback_query
+    await q.answer()
+
+    app = context.application
+    pool = app.bot_data["db_pool"]
+
+    row = await get_user_row(pool, q.from_user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    is_premium = _is_premium_row(row)
+    if not is_premium:
+        await q.edit_message_text(t(lang, "nsfw_blocked_free"))
+        return
+
+    try:
+        count = int(q.data.split("_")[-1])
+    except Exception:
+        count = 1
+    count = min(max(count, 1), PREMIUM_IMAGE_COUNT)
+
+    prompt = context.user_data.get("prompt", "") or ""
+    translated = context.user_data.get("translated", prompt) or prompt
+
+    if not prompt:
+        await q.edit_message_text(t(lang, "error_occurred"))
+        return
+
+    active: set = app.bot_data["active_users"]
+    if q.from_user.id in active:
+        await q.edit_message_text(t(lang, "already_processing"))
+        return
+
+    request_id = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO requests(id, user_id, prompt_text, image_count, is_premium, nsfw_flag, status) "
+            "VALUES($1,$2,$3,$4,$5,$6,'queued')",
+            request_id, q.from_user.id, prompt, count, True, True
+        )
+
+    active.add(q.from_user.id)
+    wait_sec = _estimate_wait_seconds(app)
+    try:
+        status_msg = await q.message.reply_text(t(lang, "queued", sec=wait_sec))
+        status_message_id = status_msg.message_id
+    except Exception:
+        status_message_id = None
+
+    job = GenerationJob(
+        request_id=request_id,
+        user=q.from_user,
+        chat_id=q.message.chat_id,
+        prompt=prompt,
+        translated_prompt=translated,
+        count=count,
+        lang_code=lang_code,
+        is_premium=True,
+        nsfw_flag=True,
+        paid_credits_used=0,
+        status_message_id=status_message_id,
+    )
+    await enqueue_generation(app, job)
+    await log_event(pool, q.from_user.id, "nsfw_continue_bot", {"prompt": prompt[:500], "count": count})
+
 # --- Override build_app to include new handlers and remove Settings menu ---
 def build_app():
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
@@ -6533,6 +6527,8 @@ def build_app():
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CallbackQueryHandler(admin_ban_unban_menu_handler, pattern="^admin_ban_unban_menu$"))
     app.add_handler(CallbackQueryHandler(admin_settings_handler, pattern="^admin_settings$"))
+    app.add_handler(CallbackQueryHandler(admin_premium_prices_handler, pattern="^admin_premium_prices$"))
+    app.add_handler(CallbackQueryHandler(admin_set_price_prompt_cb, pattern=r"^admin_set_price:(24h|7d|30d)$"))
     app.add_handler(CallbackQueryHandler(admin_manage_tokens_handler, pattern="^admin_manage_tokens$"))
     app.add_handler(CallbackQueryHandler(admin_lang_editor_handler, pattern="^admin_lang_editor$"))
     app.add_handler(CallbackQueryHandler(admin_export_db_handler, pattern="^admin_export_db$"))
@@ -6543,8 +6539,12 @@ def build_app():
     app.add_handler(CallbackQueryHandler(admin_ban_inline_handler, pattern=r"^admin_ban_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_unban_inline_handler, pattern=r"^admin_unban_\d+$"))
     app.add_handler(
-        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_user_search_handler),
+        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_price_input_handler),
         group=5
+    )
+    app.add_handler(
+        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_user_search_handler),
+        group=6
     )
 
     # Premium
@@ -6554,6 +6554,13 @@ def build_app():
     # Start / Back
     app.add_handler(CallbackQueryHandler(start_handler, pattern="^back_to_main$"))
     app.add_handler(CommandHandler("start", start_handler))
+
+    # Settings / Model selection
+    app.add_handler(CallbackQueryHandler(settings_menu, pattern="^back_to_settings$"))
+    app.add_handler(CallbackQueryHandler(settings_menu, pattern="^open_settings$"))
+    app.add_handler(CallbackQueryHandler(select_image_model, pattern="^select_image_model$"))
+    app.add_handler(CallbackQueryHandler(confirm_model_selection, pattern=r"^confirm_model_.*$"))
+    app.add_handler(CallbackQueryHandler(set_image_model, pattern=r"^set_model_.*$"))
 
     # Inline mode
     app.add_handler(InlineQueryHandler(inline_query_handler))
@@ -6622,6 +6629,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(handle_start_gen, pattern="^start_gen$"))
     app.add_handler(CallbackQueryHandler(check_sub_button_handler, pattern="^check_sub$"))
     app.add_handler(CallbackQueryHandler(generate_cb, pattern=r"^count_\d+$"))
+    app.add_handler(CallbackQueryHandler(nsfw_continue_bot_handler, pattern=r"^nsfw_bot_\d+$"))
     app.add_handler(CallbackQueryHandler(buy_pack_handler, pattern=r"^buy_pack_\d+$"))
     app.add_handler(CallbackQueryHandler(gen_image_from_prompt_handler, pattern="^gen_image_from_prompt$"))
 
