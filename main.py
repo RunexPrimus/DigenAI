@@ -5947,17 +5947,28 @@ async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT
     has_media = any([msg.document, msg.video, msg.audio, msg.voice, msg.sticker, msg.animation, msg.photo])
     if not has_media:
         return
+
     try:
-        # Bu qatorlar try dan o'ngga surilgan bo'lishi shart:
-        await context.bot.copy_message(chat_id=ADMIN_ID, from_chat_id=msg.chat_id, message_id=msg.message_id)
+        # Media faylni adminga nusxalash
+        await context.bot.copy_message(
+            chat_id=ADMIN_ID, 
+            from_chat_id=msg.chat_id, 
+            message_id=msg.message_id
+        )
+        
+        # Admin uchun ma'lumot yuborish
         uname = f"@{update.effective_user.username}" if update.effective_user and update.effective_user.username else "—"
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=f"📩 File received\n👤 {uname} (ID: {update.effective_user.id})\n⏰ {tashkent_time().strftime('%Y-%m-%d %H:%M:%S')}"
         )
+        
+        # Foydalanuvchiga tasdiq xabarini yuborish
+        await msg.reply_text("✅ Received! I’ve sent this to support.")
+        
     except Exception as e:
-        # Xatoni ushlash uchun bu qism ham shart
-        print(f"Error: {e}")
+        # Xatolik yuz bersa konsolga chiqarish
+        print(f"Relay error: {e}")
 # --- Override build_app to include new handlers and remove Settings menu ---
 def build_app():
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).post_shutdown(on_shutdown).build()
