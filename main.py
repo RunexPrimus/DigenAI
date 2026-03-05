@@ -5058,7 +5058,7 @@ async def premium_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     kb_rows = []
     # Add video preview button if URL configured
     if PREMIUM_VIDEO_URL:
-        kb_rows.append([InlineKeyboardButton("🎬 Premium haqida video ko'rish", url=https://streamable.com/tru3qj)])
+        kb_rows.append([InlineKeyboardButton("🎬 Premium haqida video ko'rish", url=PREMIUM_VIDEO_URL)])
     # Plan buttons
     kb_rows += premium_keyboard(lang, prices).inline_keyboard
 
