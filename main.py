@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 BAN_STATE = 1
 UNBAN_STATE = 2
 # BROADCAST_STATE va DONATE_WAITING_AMOUNT quyida to'g'ri qiymatlari bilan aniqlanadi
+ADMIN_PREMIUM_STATE = 130  # Admin premium berish — muddat so'rash
 # ---------------- ENV ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7440949683"))
@@ -3720,10 +3721,12 @@ async def admin_ban_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def admin_show_user_card(context: ContextTypes.DEFAULT_TYPE, user_id: int, *, q=None, message=None):
+    import datetime
     pool = context.application.bot_data["db_pool"]
     async with pool.acquire() as conn:
         u = await conn.fetchrow(
-            "SELECT id, username, language_code, is_banned, image_model_id, extra_credits, last_seen, first_seen "
+            "SELECT id, username, language_code, is_banned, image_model_id, extra_credits, last_seen, first_seen, "
+            "subscription_type, subscription_expire "
             "FROM users WHERE id=$1",
             user_id
         )
@@ -3751,6 +3754,18 @@ async def admin_show_user_card(context: ContextTypes.DEFAULT_TYPE, user_id: int,
             break
 
     uname = f"@{u['username']}" if u["username"] else "—"
+
+    # Premium holati
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    sub_exp = u["subscription_expire"]
+    sub_type = u["subscription_type"] or "none"
+    if sub_exp and sub_exp > now_utc and sub_type != "none":
+        tz5 = datetime.timezone(datetime.timedelta(hours=5))
+        exp_local = sub_exp.astimezone(tz5)
+        prem_status = f"✅ Aktiv ({sub_type}) до {exp_local.strftime('%d.%m.%Y %H:%M')}"
+    else:
+        prem_status = "❌ Yo'q"
+
     text = (
         f"👤 *User Card*\n\n"
         f"🆔 *ID:* `{u['id']}`\n"
@@ -3760,7 +3775,8 @@ async def admin_show_user_card(context: ContextTypes.DEFAULT_TYPE, user_id: int,
         f"🖼 *Bugun:* `{today_images}` / `{DAILY_FREE_IMAGES}`\n"
         f"🖼 *Jami:* `{total_images}`\n"
         f"💳 *Extra kredit:* `{int(u['extra_credits'] or 0)}`\n"
-        f"⛔ *Ban:* {'✅ Ha' if u['is_banned'] else '❌ Yo‘q'}"
+        f"⭐ *Premium:* {prem_status}\n"
+        f"⛔ *Ban:* {'✅ Ha' if u['is_banned'] else '❌ Yoq'}"
     )
 
     kb = [
@@ -3768,15 +3784,156 @@ async def admin_show_user_card(context: ContextTypes.DEFAULT_TYPE, user_id: int,
             InlineKeyboardButton("🚫 Ban", callback_data=f"admin_ban_{u['id']}"),
             InlineKeyboardButton("🔓 Unban", callback_data=f"admin_unban_{u['id']}")
         ],
+        [
+            InlineKeyboardButton("⭐ Premium berish", callback_data=f"admin_prem_give_{u['id']}"),
+            InlineKeyboardButton("🗑 Premiumni olish", callback_data=f"admin_prem_revoke_{u['id']}")
+        ],
         [InlineKeyboardButton("📨 Xabar yuborish", callback_data=f"admin_sendmsg_{u['id']}")],
         [InlineKeyboardButton("📈 Statistika", callback_data=f"admin_user_stats_{u['id']}")],
-        [InlineKeyboardButton("⬅️ Roʻyxatga qaytish", callback_data="admin_users_list_0")]
+        [InlineKeyboardButton("⬅️ Ro'yxatga qaytish", callback_data="admin_users_list_0")]
     ]
 
     if q:
         await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
     elif message:
         await message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+# ─── Admin: Premium berish ──────────────────────────────────────────────────
+
+async def admin_prem_give_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Premium berish — muddat so'rashga kiramiz."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    q = update.callback_query
+    await q.answer()
+    user_id = int(q.data.split("_")[-1])
+    context.user_data["admin_prem_target"] = user_id
+    await q.message.reply_text(
+        f"⭐ *Premium berish* — User ID: `{user_id}`\n\n"
+        "Muddat yozing. Misollar:\n"
+        "• `1d` — 1 kun\n"
+        "• `7d` — 7 kun\n"
+        "• `30d` — 30 kun\n"
+        "• `3m` — 3 oy\n"
+        "• `1y` — 1 yil\n\n"
+        "❌ Bekor qilish uchun /cancel",
+        parse_mode="Markdown"
+    )
+    return ADMIN_PREMIUM_STATE
+
+async def admin_prem_give_apply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muddatni o'qib premiumni DB ga yozamiz."""
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    if update.message.text and update.message.text.strip() == "/cancel":
+        await update.message.reply_text("❌ Bekor qilindi.")
+        context.user_data.pop("admin_prem_target", None)
+        return ConversationHandler.END
+
+    user_id = context.user_data.pop("admin_prem_target", None)
+    if not user_id:
+        await update.message.reply_text("❌ Target topilmadi.")
+        return ConversationHandler.END
+
+    raw = (update.message.text or "").strip().lower()
+    import datetime, re
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+    m = re.fullmatch(r'(\d+)([dwmy])', raw)
+    if not m:
+        await update.message.reply_text(
+            "⚠️ Noto'g'ri format!\nMisollar: `1d`, `7d`, `30d`, `3m`, `1y`",
+            parse_mode="Markdown"
+        )
+        context.user_data["admin_prem_target"] = user_id
+        return ADMIN_PREMIUM_STATE
+
+    amount, unit = int(m.group(1)), m.group(2)
+    if unit == 'd':
+        delta = datetime.timedelta(days=amount)
+        plan = f"{amount}d"
+    elif unit == 'w':
+        delta = datetime.timedelta(weeks=amount)
+        plan = f"{amount}w"
+    elif unit == 'm':
+        delta = datetime.timedelta(days=amount * 30)
+        plan = f"{amount}m"
+    else:  # y
+        delta = datetime.timedelta(days=amount * 365)
+        plan = f"{amount}y"
+
+    expire_at = now_utc + delta
+    tz5 = datetime.timezone(datetime.timedelta(hours=5))
+    exp_str = expire_at.astimezone(tz5).strftime('%d.%m.%Y %H:%M')
+
+    pool = context.application.bot_data["db_pool"]
+    async with pool.acquire() as conn:
+        # Check user exists
+        exists = await conn.fetchval("SELECT 1 FROM users WHERE id=$1", user_id)
+        if not exists:
+            await update.message.reply_text(f"❌ User `{user_id}` topilmadi.", parse_mode="Markdown")
+            return ConversationHandler.END
+        await conn.execute(
+            "UPDATE users SET subscription_type=$1, subscription_expire=$2 WHERE id=$3",
+            plan, expire_at, user_id
+        )
+
+    await update.message.reply_text(
+        f"✅ *Premium berildi!*\n\n"
+        f"👤 User: `{user_id}`\n"
+        f"📦 Plan: `{plan}`\n"
+        f"📅 Tugash: `{exp_str}` (Toshkent)\n",
+        parse_mode="Markdown"
+    )
+
+    # Userga xabar yuborish
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"🎉 *Tabriklaymiz!*\n\nSizga *Premium* berildi!\n📅 Muddat: *{exp_str}* (Toshkent) gacha\n\n✅ NSFW, prioritet navbat va 4x rasm endi sizniki!",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    return ConversationHandler.END
+
+
+async def admin_prem_revoke_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Premiumni darhol bekor qilish."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    q = update.callback_query
+    await q.answer()
+    user_id = int(q.data.split("_")[-1])
+
+    pool = context.application.bot_data["db_pool"]
+    async with pool.acquire() as conn:
+        u = await conn.fetchrow("SELECT id, username FROM users WHERE id=$1", user_id)
+        if not u:
+            await q.answer("❌ User topilmadi", show_alert=True)
+            return
+        await conn.execute(
+            "UPDATE users SET subscription_type='none', subscription_expire=NULL WHERE id=$1",
+            user_id
+        )
+
+    uname = f"@{u['username']}" if u["username"] else str(user_id)
+    await q.answer(f"✅ {uname} premiumdan chiqarildi", show_alert=True)
+
+    # Userga xabar
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="ℹ️ Sizning Premium obunangiz admin tomonidan bekor qilindi."
+        )
+    except Exception:
+        pass
+
+    # Kartani yangilash
+    await admin_show_user_card(context, user_id, q=q)
+
+
 
 async def admin_user_stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -7537,6 +7694,21 @@ def build_app():
     app.add_handler(CallbackQueryHandler(admin_usercard_handler, pattern=r"^admin_usercard_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_ban_inline_handler, pattern=r"^admin_ban_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_unban_inline_handler, pattern=r"^admin_unban_\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_prem_revoke_handler, pattern=r"^admin_prem_revoke_\d+$"))
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_prem_give_start, pattern=r"^admin_prem_give_\d+$")],
+        states={
+            ADMIN_PREMIUM_STATE: [
+                MessageHandler(
+                    filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID),
+                    admin_prem_give_apply
+                )
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
+        name="admin_premium_conv",
+        persistent=False,
+    ))
     app.add_handler(
         MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & filters.User(ADMIN_ID) & ~filters.COMMAND, admin_price_input_handler),
         group=5
