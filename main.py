@@ -3302,7 +3302,7 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("📤 DB Eksport", callback_data="admin_export_db")],
         [InlineKeyboardButton("⬅️ Asosiy", callback_data="back_to_main")]
     ]
-    await q.edit_message_text("🔐 **Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+    await q.edit_message_text("🔐 Admin Panel", reply_markup=InlineKeyboardMarkup(kb))
 #------------------------------------------------------------------------------------------
 async def admin_stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -3310,95 +3310,108 @@ async def admin_stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     q = update.callback_query
     await q.answer()
     pool = context.application.bot_data["db_pool"]
-    now = utc_now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_ago = now - timedelta(days=7)
+    try:
+        now = utc_now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_ago = now - timedelta(days=7)
 
-    async with pool.acquire() as conn:
-        total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
-        new_24h = await conn.fetchval("SELECT COUNT(*) FROM users WHERE first_seen >= $1", now - timedelta(hours=24))
-        total_gens = await conn.fetchval("SELECT COALESCE(SUM(image_count), 0) FROM generations")
-        today_gens = await conn.fetchval("SELECT COALESCE(SUM(image_count), 0) FROM generations WHERE created_at >= $1", today_start)
-        stars_earned = await conn.fetchval("SELECT COALESCE(SUM(stars), 0) FROM donations WHERE refunded_at IS NULL")
-        errors_48h = await conn.fetchval(
-            "SELECT COUNT(*) FROM donations d JOIN generations g ON d.user_id = g.user_id "
-            "WHERE d.refunded_at IS NOT NULL AND d.created_at >= $1",
-            now - timedelta(hours=48)
+        async with pool.acquire() as conn:
+            total_users = int(await conn.fetchval("SELECT COUNT(*) FROM users") or 0)
+            new_24h = int(await conn.fetchval("SELECT COUNT(*) FROM users WHERE first_seen >= $1", now - timedelta(hours=24)) or 0)
+            total_gens = int(await conn.fetchval("SELECT COALESCE(SUM(image_count), 0) FROM generations") or 0)
+            today_gens = int(await conn.fetchval("SELECT COALESCE(SUM(image_count), 0) FROM generations WHERE created_at >= $1", today_start) or 0)
+            stars_earned = int(await conn.fetchval("SELECT COALESCE(SUM(stars), 0) FROM donations WHERE refunded_at IS NULL") or 0)
+            active_7d = int(await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM generations WHERE created_at >= $1", week_ago) or 0)
+
+            # Premium users count (may fail if columns missing)
+            try:
+                prem_count = int(await conn.fetchval("SELECT COUNT(*) FROM users WHERE subscription_expire > NOW()") or 0)
+            except Exception:
+                prem_count = 0
+
+        text = (
+            "Admin Statistika\n\n"
+            f"Jami foydalanuvchilar: {total_users}\n"
+            f"24h yangi: +{new_24h}\n"
+            f"Bugun generatsiya: {today_gens}\n"
+            f"Jami rasmlar: {total_gens}\n"
+            f"7 kunlik faol: {active_7d}\n"
+            f"Premium foydalanuvchilar: {prem_count}\n"
+            f"Stars daromad: {stars_earned} XTR"
         )
-        active_7d = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM generations WHERE created_at >= $1", week_ago)
+        kb = [
+            [InlineKeyboardButton("Yangilash", callback_data="admin_stats")],
+            [InlineKeyboardButton("Foydalanuvchilar", callback_data="admin_users_list_0")],
+            [InlineKeyboardButton("Orqaga", callback_data="admin_panel")]
+        ]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"admin_stats error: {e}", exc_info=True)
+        try:
+            await q.message.reply_text(f"Xatolik: {e}")
+        except Exception:
+            pass
 
-    text = (
-        "📊 *Admin Statistika*\n\n"
-        f"👥 *Jami foydalanuvchilar:* {total_users}\n"
-        f"🆕 *24h yangi:* +{new_24h}\n"
-        f"📆 *Bugun generatsiya:* {today_gens}\n"
-        f"🖼 *Jami rasmlar:* {total_gens}\n"
-        f"💬 *7 kunlik faol:* {active_7d}\n"
-        f"💎 *Stars daromad:* {stars_earned} XTR\n"
-        f"📉 *48h refund:* {errors_48h}"
-    )
-    kb = [
-        [InlineKeyboardButton("🔄 Yangilash", callback_data="admin_stats")],
-        [InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="admin_users_list_0")],
-        [InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_panel")]
-    ]
-    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-#------------------------------------------------------------------------------------------
 async def admin_users_list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     q = update.callback_query
+    await q.answer()
     page = int(q.data.split("_")[-1])
     offset = page * 5
     pool = context.application.bot_data["db_pool"]
-    async with pool.acquire() as conn:
-        users = await conn.fetch("""
-            SELECT id, username, language_code, image_model_id,
-                   (SELECT COUNT(*) FROM generations WHERE user_id = u.id) AS gen_count,
-                   last_seen
-            FROM users u
-            ORDER BY last_seen DESC
-            LIMIT 5 OFFSET $1
-        """, offset)
-        total = await conn.fetchval("SELECT COUNT(*) FROM users")
-    pages = (total + 4) // 5  # 5 ta/ sahifa
+    try:
+        async with pool.acquire() as conn:
+            users = await conn.fetch("""
+                SELECT id, username, language_code, image_model_id,
+                       (SELECT COUNT(*) FROM generations WHERE user_id = u.id) AS gen_count,
+                       last_seen
+                FROM users u
+                ORDER BY last_seen DESC NULLS LAST
+                LIMIT 5 OFFSET $1
+            """, offset)
+            total = int(await conn.fetchval("SELECT COUNT(*) FROM users") or 0)
 
-    lines = ["👥 *Foydalanuvchilar roʻyxati:*"]
-    for u in users:
-        uname = f"@{u['username']}" if u["username"] else "—"
-        lang = u["language_code"] or "uz"
-        flag = LANGUAGES.get(lang, {}).get("flag", "🌐")
-        model_title = "Default"
-        for m in DIGEN_MODELS:
-            if m["id"] == u["image_model_id"]:
-                model_title = m["title"][:15]
-                break
-        last_seen = (utc_now() - u["last_seen"]).total_seconds() / 3600 if u["last_seen"] else 999
-        last_str = f"{int(last_seen)}h" if last_seen < 48 else f"{int(last_seen/24)}d"
-        lines.append(
-            f"\n▫️ `{u['id']}` {flag} {uname}\n"
-            f"   📸 {u['gen_count']} | 🎨 {model_title} | 🕒 {last_str}"
-        )
-    text = "\n".join(lines) if lines else "❌ Hech kim yo‘q."
+        lines_out = [f"Foydalanuvchilar ({total} ta) — {page+1}/{max((total+4)//5, 1)} sahifa:"]
+        for u in users:
+            uname = ("@" + u["username"]) if u["username"] else "—"
+            flag = LANGUAGES.get(u["language_code"] or "uz", {}).get("flag", "🌐")
+            model_title = "Default"
+            for m in DIGEN_MODELS:
+                if m["id"] == (u["image_model_id"] or ""):
+                    model_title = m["title"][:12]
+                    break
+            if u["last_seen"]:
+                diff = (utc_now() - u["last_seen"]).total_seconds() / 3600
+                last_str = f"{int(diff)}h" if diff < 48 else f"{int(diff/24)}d"
+            else:
+                last_str = "?"
+            lines_out.append("\n" + flag + " " + uname + " (ID: " + str(u["id"]) + ")")
+            lines_out.append("  Rasm: " + str(u["gen_count"]) + " | " + last_str + " oldin")
 
-    kb = []
-    row = []
-    if page > 0:
-        row.append(InlineKeyboardButton("⬅️", callback_data=f"admin_users_list_{page-1}"))
-    if (page + 1) * 5 < total:
-        row.append(InlineKeyboardButton("➡️", callback_data=f"admin_users_list_{page+1}"))
-    if row:
-        kb.append(row)
-    
-    kb.append([
-        InlineKeyboardButton("🔍 Qidiruv (ID/username)", callback_data="admin_user_search_prompt")
-    ])
-    kb.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_panel")])
+        text = "\n".join(lines_out)
 
-    await q.edit_message_text(text[:4096], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        kb = []
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️", callback_data=f"admin_users_list_{page-1}"))
+        if (page + 1) * 5 < total:
+            nav.append(InlineKeyboardButton("➡️", callback_data=f"admin_users_list_{page+1}"))
+        if nav:
+            kb.append(nav)
+        kb.append([InlineKeyboardButton("🔍 Qidiruv (ID/username)", callback_data="admin_user_search_prompt")])
+        kb.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_panel")])
 
-#---------------------------------------------------------------------------------------
+        await q.edit_message_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"admin_users_list error: {e}", exc_info=True)
+        try:
+            await q.message.reply_text(f"Xatolik: {e}")
+        except Exception:
+            pass
+
 async def admin_user_search_prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -3414,8 +3427,8 @@ async def admin_channels_handler(update: Update, context: ContextTypes.DEFAULT_T
     await q.answer()
     # Hozircha statik kanal ko'rsatiladi
     channels_list = "\n".join([f"• {ch['username']}" for ch in MANDATORY_CHANNELS]) if MANDATORY_CHANNELS else "❌ Hech narsa yo'q"
-    text = f"🔗 **Majburiy obuna kanallari:**\n\n{channels_list}\n\nℹ️ Kanallarni o'zgartirish uchun `.env` faylini tahrirlang."
-    await q.message.reply_text(text, parse_mode="Markdown")
+    text = "Majburiy obuna kanallari:\n\n" + channels_list + "\n\nKanallarni o'zgartirish uchun .env faylini tahrirlang."
+    await q.message.reply_text(text)
 #------------------------------------------------------------------------------------------------
 async def admin_ban_inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -3515,7 +3528,7 @@ async def admin_settings_handler(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("📥 DB yuklab olish", callback_data="admin_export_db")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_panel")]
     ]
-    await q.edit_message_text("⚙️ *Sozlamalar*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+    await q.edit_message_text("⚙️ Sozlamalar", reply_markup=InlineKeyboardMarkup(kb))
 #-------------------------------------------------------------------------------------
 # BROADCAST_STATE is defined globally above as 3 — do not redefine here
 
@@ -3655,10 +3668,10 @@ async def admin_unban_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
         async with pool.acquire() as conn:
             row = await conn.fetchrow("SELECT id FROM users WHERE id = $1", user_id)
             if not row:
-                await update.message.reply_text(f"❌ Foydalanuvchi `{user_id}` topilmadi.", parse_mode="Markdown")
+                await update.message.reply_text(f"❌ Foydalanuvchi {user_id} topilmadi.")
                 return
             await conn.execute("UPDATE users SET is_banned = FALSE WHERE id = $1", user_id)
-        await update.message.reply_text(f"✅ Foydalanuvchi `{user_id}` muvaffaqiyatli **bandan chiqarildi**.", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Foydalanuvchi {user_id} bandan chiqarildi.")
     except ValueError:
         await update.message.reply_text("❌ Noto'g'ri ID. Faqat raqam yuboring.")
     return ConversationHandler.END
@@ -3681,7 +3694,7 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💎 Refund", callback_data="admin_refund_menu")],
         [InlineKeyboardButton("📤 DB Eksport", callback_data="admin_export_db")],
     ]
-    await update.message.reply_text("🔐 **Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("🔐 Admin Panel", reply_markup=InlineKeyboardMarkup(kb))
 
 async def admin_ban_unban_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -3693,7 +3706,7 @@ async def admin_ban_unban_menu_handler(update: Update, context: ContextTypes.DEF
         [InlineKeyboardButton("🔓 Unban (ID orqali)", callback_data="admin_unban_start")],
         [InlineKeyboardButton("⬅️ Orqaga", callback_data="admin_panel")]
     ]
-    await q.edit_message_text("🚫 / 🔓 *Ban & Unban*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+    await q.edit_message_text("Ban & Unban", reply_markup=InlineKeyboardMarkup(kb))
 
 async def admin_ban_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -3712,10 +3725,10 @@ async def admin_ban_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with pool.acquire() as conn:
             row = await conn.fetchrow("SELECT id FROM users WHERE id = $1", user_id)
             if not row:
-                await update.message.reply_text(f"❌ Foydalanuvchi `{user_id}` topilmadi.", parse_mode="Markdown")
+                await update.message.reply_text(f"❌ Foydalanuvchi {user_id} topilmadi.")
                 return ConversationHandler.END
             await conn.execute("UPDATE users SET is_banned = TRUE WHERE id = $1", user_id)
-        await update.message.reply_text(f"✅ Foydalanuvchi `{user_id}` **ban qilindi**.", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Foydalanuvchi {user_id} ban qilindi.")
     except ValueError:
         await update.message.reply_text("❌ Noto'g'ri ID. Faqat raqam yuboring.")
     return ConversationHandler.END
