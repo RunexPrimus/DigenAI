@@ -3721,84 +3721,109 @@ async def admin_ban_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def admin_show_user_card(context: ContextTypes.DEFAULT_TYPE, user_id: int, *, q=None, message=None):
-    import datetime
+    import datetime as _dt
     pool = context.application.bot_data["db_pool"]
-    async with pool.acquire() as conn:
-        u = await conn.fetchrow(
-            "SELECT id, username, language_code, is_banned, image_model_id, extra_credits, last_seen, first_seen, "
-            "subscription_type, subscription_expire "
-            "FROM users WHERE id=$1",
-            user_id
+    try:
+        async with pool.acquire() as conn:
+            # Avval asosiy ustunlar
+            u = await conn.fetchrow(
+                "SELECT id, username, language_code, is_banned, image_model_id, extra_credits, last_seen, first_seen "
+                "FROM users WHERE id=$1",
+                user_id
+            )
+            if not u:
+                if q:
+                    await q.answer("User topilmadi", show_alert=True)
+                if message:
+                    await message.reply_text("❌ Foydalanuvchi topilmadi.")
+                return
+
+            # Premium ustunlarini alohida — mavjud bo'lmasa None qaytadi
+            sub_row = None
+            try:
+                sub_row = await conn.fetchrow(
+                    "SELECT subscription_type, subscription_expire FROM users WHERE id=$1", user_id
+                )
+            except Exception:
+                pass
+
+            total_images = int(await conn.fetchval(
+                "SELECT COALESCE(SUM(image_count),0) FROM generations WHERE user_id=$1", user_id
+            ) or 0)
+            today_images = int(await conn.fetchval(
+                "SELECT COALESCE(SUM(image_count),0) FROM generations WHERE user_id=$1 AND created_at >= $2",
+                user_id, tashkent_day_start_utc()
+            ) or 0)
+
+        lang = get_lang(u["language_code"] or DEFAULT_LANGUAGE)
+
+        model_title = "Default"
+        for m in DIGEN_MODELS:
+            if m["id"] == (u["image_model_id"] or ""):
+                model_title = m["title"]
+                break
+
+        raw_uname = f"@{u['username']}" if u["username"] else "—"
+
+        # Premium holati
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        sub_exp = sub_row["subscription_expire"] if sub_row else None
+        sub_type = (sub_row["subscription_type"] if sub_row else None) or "none"
+
+        if sub_exp and sub_exp > now_utc and sub_type != "none":
+            tz5 = _dt.timezone(_dt.timedelta(hours=5))
+            exp_local = sub_exp.astimezone(tz5)
+            prem_status = f"Aktiv ({sub_type}) — {exp_local.strftime('%d.%m.%Y %H:%M')}"
+        else:
+            prem_status = "Yoq"
+
+        ban_str = "Ha" if u["is_banned"] else "Yoq"
+        text = (
+            f"User Card\n"
+            f"ID: {u['id']}\n"
+            f"Username: {raw_uname}\n"
+            f"Til: {lang['flag']} {lang['name']}\n"
+            f"Model: {model_title}\n"
+            f"Bugun: {today_images} / {DAILY_FREE_IMAGES}\n"
+            f"Jami rasm: {total_images}\n"
+            f"Extra kredit: {int(u['extra_credits'] or 0)}\n"
+            f"Premium: {prem_status}\n"
+            f"Ban: {ban_str}"
         )
-        if not u:
+
+        kb = [
+            [
+                InlineKeyboardButton("🚫 Ban", callback_data=f"admin_ban_{u['id']}"),
+                InlineKeyboardButton("🔓 Unban", callback_data=f"admin_unban_{u['id']}")
+            ],
+            [
+                InlineKeyboardButton("⭐ Premium berish", callback_data=f"admin_prem_give_{u['id']}"),
+                InlineKeyboardButton("🗑 Premiumni olish", callback_data=f"admin_prem_revoke_{u['id']}")
+            ],
+            [InlineKeyboardButton("📨 Xabar yuborish", callback_data=f"admin_sendmsg_{u['id']}")],
+            [InlineKeyboardButton("📈 Statistika", callback_data=f"admin_user_stats_{u['id']}")],
+            [InlineKeyboardButton("Royxatga qaytish", callback_data="admin_users_list_0")]
+        ]
+
+        if q:
+            try:
+                await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+            except Exception:
+                await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        elif message:
+            await message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"admin_show_user_card error: {e}", exc_info=True)
+        err_text = f"Xatolik: {e}"
+        try:
             if q:
-                await q.answer("User topilmadi", show_alert=True)
-            if message:
-                await message.reply_text("❌ Foydalanuvchi topilmadi.")
-            return
-
-        total_images = int(await conn.fetchval(
-            "SELECT COALESCE(SUM(image_count),0) FROM generations WHERE user_id=$1", user_id
-        ) or 0)
-        today_images = int(await conn.fetchval(
-            "SELECT COALESCE(SUM(image_count),0) FROM generations WHERE user_id=$1 AND created_at >= $2",
-            user_id, tashkent_day_start_utc()
-        ) or 0)
-
-    lang = get_lang(u["language_code"] or DEFAULT_LANGUAGE)
-
-    model_title = "Default"
-    for m in DIGEN_MODELS:
-        if m["id"] == (u["image_model_id"] or ""):
-            model_title = m["title"]
-            break
-
-    uname = f"@{u['username']}" if u["username"] else "—"
-
-    # Premium holati
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    sub_exp = u["subscription_expire"]
-    sub_type = u["subscription_type"] or "none"
-    if sub_exp and sub_exp > now_utc and sub_type != "none":
-        tz5 = datetime.timezone(datetime.timedelta(hours=5))
-        exp_local = sub_exp.astimezone(tz5)
-        prem_status = f"✅ Aktiv ({sub_type}) до {exp_local.strftime('%d.%m.%Y %H:%M')}"
-    else:
-        prem_status = "❌ Yo'q"
-
-    text = (
-        f"👤 *User Card*\n\n"
-        f"🆔 *ID:* `{u['id']}`\n"
-        f"👤 *Username:* {uname}\n"
-        f"🌐 *Til:* {lang['flag']} {lang['name']}\n"
-        f"🎨 *Model:* {model_title}\n"
-        f"🖼 *Bugun:* `{today_images}` / `{DAILY_FREE_IMAGES}`\n"
-        f"🖼 *Jami:* `{total_images}`\n"
-        f"💳 *Extra kredit:* `{int(u['extra_credits'] or 0)}`\n"
-        f"⭐ *Premium:* {prem_status}\n"
-        f"⛔ *Ban:* {'✅ Ha' if u['is_banned'] else '❌ Yoq'}"
-    )
-
-    kb = [
-        [
-            InlineKeyboardButton("🚫 Ban", callback_data=f"admin_ban_{u['id']}"),
-            InlineKeyboardButton("🔓 Unban", callback_data=f"admin_unban_{u['id']}")
-        ],
-        [
-            InlineKeyboardButton("⭐ Premium berish", callback_data=f"admin_prem_give_{u['id']}"),
-            InlineKeyboardButton("🗑 Premiumni olish", callback_data=f"admin_prem_revoke_{u['id']}")
-        ],
-        [InlineKeyboardButton("📨 Xabar yuborish", callback_data=f"admin_sendmsg_{u['id']}")],
-        [InlineKeyboardButton("📈 Statistika", callback_data=f"admin_user_stats_{u['id']}")],
-        [InlineKeyboardButton("⬅️ Ro'yxatga qaytish", callback_data="admin_users_list_0")]
-    ]
-
-    if q:
-        await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-    elif message:
-        await message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-# ─── Admin: Premium berish ──────────────────────────────────────────────────
+                await q.message.reply_text(err_text)
+            elif message:
+                await message.reply_text(err_text)
+        except Exception:
+            pass
 
 async def admin_prem_give_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Premium berish — muddat so'rashga kiramiz."""
