@@ -3529,29 +3529,111 @@ async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TY
 async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    # Barcha foydalanuvchilarni olish
     pool = context.application.bot_data["db_pool"]
     async with pool.acquire() as conn:
-        users = await conn.fetch("SELECT id FROM users")
-    
+        users = await conn.fetch("SELECT id FROM users WHERE is_banned IS NOT TRUE")
+
+    msg = update.message
     sent = 0
+    failed = 0
+
+    # Determine caption/parse_mode
+    caption = msg.caption or None
+    parse_mode = "HTML" if caption and ("<b>" in caption or "<i>" in caption or "<a " in caption) else None
+
     for row in users:
+        uid = row["id"]
         try:
-            if update.message.text:
-                await context.bot.send_message(chat_id=row["id"], text=update.message.text)
-            elif update.message.photo:
-                await context.bot.send_photo(chat_id=row["id"], photo=update.message.photo[-1].file_id, caption=update.message.caption)
-            elif update.message.video:
-                await context.bot.send_video(chat_id=row["id"], video=update.message.video.file_id, caption=update.message.caption)
-            elif update.message.document:
-                await context.bot.send_document(chat_id=row["id"], document=update.message.document.file_id, caption=update.message.caption)
+            if msg.text:
+                # Detect if text has HTML tags
+                pm = "HTML" if ("<b>" in msg.text or "<i>" in msg.text or "<a " in msg.text) else None
+                await context.bot.send_message(
+                    chat_id=uid, text=msg.text, parse_mode=pm,
+                    entities=msg.entities if not pm else None
+                )
+            elif msg.photo:
+                await context.bot.send_photo(
+                    chat_id=uid, photo=msg.photo[-1].file_id,
+                    caption=caption, parse_mode=parse_mode,
+                    caption_entities=msg.caption_entities if not parse_mode else None
+                )
+            elif msg.video:
+                await context.bot.send_video(
+                    chat_id=uid, video=msg.video.file_id,
+                    caption=caption, parse_mode=parse_mode,
+                    caption_entities=msg.caption_entities if not parse_mode else None
+                )
+            elif msg.animation:
+                await context.bot.send_animation(
+                    chat_id=uid, animation=msg.animation.file_id,
+                    caption=caption, parse_mode=parse_mode
+                )
+            elif msg.audio:
+                await context.bot.send_audio(
+                    chat_id=uid, audio=msg.audio.file_id,
+                    caption=caption, parse_mode=parse_mode,
+                    title=msg.audio.title, performer=msg.audio.performer
+                )
+            elif msg.voice:
+                await context.bot.send_voice(
+                    chat_id=uid, voice=msg.voice.file_id,
+                    caption=caption, parse_mode=parse_mode
+                )
+            elif msg.video_note:
+                await context.bot.send_video_note(
+                    chat_id=uid, video_note=msg.video_note.file_id
+                )
+            elif msg.document:
+                await context.bot.send_document(
+                    chat_id=uid, document=msg.document.file_id,
+                    caption=caption, parse_mode=parse_mode
+                )
+            elif msg.sticker:
+                await context.bot.send_sticker(
+                    chat_id=uid, sticker=msg.sticker.file_id
+                )
+            elif msg.location:
+                await context.bot.send_location(
+                    chat_id=uid,
+                    latitude=msg.location.latitude,
+                    longitude=msg.location.longitude
+                )
+            elif msg.contact:
+                await context.bot.send_contact(
+                    chat_id=uid,
+                    phone_number=msg.contact.phone_number,
+                    first_name=msg.contact.first_name,
+                    last_name=msg.contact.last_name or ""
+                )
+            elif msg.poll:
+                await context.bot.send_poll(
+                    chat_id=uid,
+                    question=msg.poll.question,
+                    options=[o.text for o in msg.poll.options],
+                    is_anonymous=msg.poll.is_anonymous,
+                    type=msg.poll.type,
+                    allows_multiple_answers=msg.poll.allows_multiple_answers
+                )
             else:
-                await context.bot.copy_message(chat_id=row["id"], from_chat_id=update.effective_chat.id, message_id=update.message.message_id)
+                # Universal fallback: copy_message (preserves all types)
+                await context.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=update.effective_chat.id,
+                    message_id=msg.message_id
+                )
             sent += 1
+            # Rate limit: avoid flood
+            if sent % 30 == 0:
+                await asyncio.sleep(1)
         except Exception as e:
-            logger.warning(f"[BROADCAST] {row['id']} ga yuborishda xatolik: {e}")
-    
-    await update.message.reply_text(f"✅ {sent} ta foydalanuvchiga xabar yuborildi.")
+            logger.warning(f"[BROADCAST] {uid} ga yuborishda xatolik: {e}")
+            failed += 1
+
+    await update.message.reply_text(
+        f"✅ Broadcast yakunlandi!\n"
+        f"📨 Yuborildi: {sent} ta\n"
+        f"❌ Yuborilmadi: {failed} ta"
+    )
     return ConversationHandler.END
 
 #-----------------------------------------------------------------------------------
@@ -3921,6 +4003,7 @@ DAILY_FREE_IMAGES = FREE_DAILY_REQUESTS  # keep old name used elsewhere
 
 FREE_COOLDOWN_SECONDS = int(os.getenv("FREE_COOLDOWN_SECONDS", "75"))  # 60–90 sec recommended
 NSFW_WEBAPP_URL = os.getenv("NSFW_WEBAPP_URL", "https://perchance.org/pretty-ai")
+PREMIUM_VIDEO_URL = os.getenv("PREMIUM_VIDEO_URL", "")  # Telegram video link after premium purchase
 NSFW_ENHANCER_SUFFIX = os.getenv("NSFW_ENHANCER_SUFFIX", "cinematic moody lighting, soft background, high detail, tasteful composition, skin detail, shallow depth of field")
 
 PREMIUM_IMAGE_COUNT = int(os.getenv("PREMIUM_IMAGE_COUNT", "4"))
@@ -4426,8 +4509,49 @@ DEFAULT_NSFW_TRIGGERS = {
 
 
 NSFW_GLOBAL_PATTERNS = sorted(set(
-    sum(DEFAULT_NSFW_TRIGGERS.values(), []) + ['\\bporn\\w*\\b', '\\bp0rn\\w*\\b', '\\bpr0n\\w*\\b', '\\bhentai\\b', '\\bh3ntai\\b', '\\bonlyfans\\b', '\\bonly\\s*fans\\b', '\\bnsfw\\b', '\\bx-?rated\\b', '\\badult\\b', '\\b18\\+\\b', '🔞', '\\bnud(e|ity)\\b', '\\bnaked\\b', '\\btopless\\b', '\\bstrip(ping)?\\b', '\\bsex\\b', '\\bsexy\\b', '\\bsexual\\b', '\\bexplicit\\b', '\\buncensored\\b', '\\bboob(s)?\\b', '\\bbreast(s)?\\b', '\\bbutt\\b', '\\bass\\b', '\\bbooty\\b', '\\bpussy\\b', '\\bvagina\\b', '\\bpenis\\b', '\\bdick\\b', '\\bcock\\b', '\\bblow\\s*job\\b', '\\bhand\\s*job\\b', '\\bmasturbat(e|ion)\\b', '\\borgasm\\b', '\\bcum\\b', '\\bsemen\\b', '\\bsperm\\b', '\\bthreesome\\b', '\\borgy\\b', '\\bпорно\\b', '\\bэрот\\w*\\b', '\\bсекс\\b', '\\bгол(ая|ый)\\b', '\\bобнажен\\w*\\b', '\\bгруд\\w*\\b', '\\bсиськ\\w*\\b', '\\bпенис\\b', '\\bвагин\\w*\\b', '\\bминет\\b', "\\byalang['’]?och\\b", '\\byalangoch\\b', '\\bseks\\b', '\\bporno\\b', '\\berotik\\b', "\\bko['’]?krak\\b", '\\bkokrak\\b', '\\bchi?plak\\b', '\\bçıplak\\b', 'عاري', 'إباحي', 'جنس', 'اباحية', 'नग्न', 'अश्लील', 'पोर्न', 'सेक्स', '\\bdesnud[oa]s?\\b', '\\bporno\\b', '\\bsex(o|ual)\\b', '\\bnu[da]s?\\b', '\\bpelad[oa]s?\\b', '🍓', '🍑', '💦', '👙', '🥵']
+    sum(DEFAULT_NSFW_TRIGGERS.values(), []) + [
+        '\\bporn\\w*\\b', '\\bp0rn\\w*\\b', '\\bpr0n\\w*\\b', '\\bhentai\\b', '\\bh3ntai\\b',
+        '\\bonlyfans\\b', '\\bonly\\s*fans\\b', '\\bnsfw\\b', '\\bx-?rated\\b', '\\badult\\b', '\\b18\\+\\b',
+        '🔞', '\\bnud(e|ity)\\b', '\\bnaked\\b', '\\btopless\\b', '\\bstrip(ping)?\\b',
+        '\\bsex\\b', '\\bsexy\\b', '\\bsexual\\b', '\\bexplicit\\b', '\\buncensored\\b',
+        '\\bboob(s)?\\b', '\\bbreast(s)?\\b', '\\bnipple(s)?\\b',
+        '\\bbutt\\b', '\\bass\\b', '\\bbooty\\b', '\\bbuttock(s)?\\b',
+        '\\bpussy\\b', '\\bvagina\\b', '\\bclit\\b', '\\blabia\\b',
+        '\\bpenis\\b', '\\bdick\\b', '\\bcock\\b', '\\bshaft\\b',
+        '\\bblow\\s*job\\b', '\\bhand\\s*job\\b', '\\bmasturbat(e|ion)\\b', '\\borgasm\\b',
+        '\\bcum\\b', '\\bsemen\\b', '\\bsperm\\b', '\\bcreampie\\b',
+        '\\bthreesome\\b', '\\borgy\\b', '\\bbdsm\\b', '\\bfetish\\b',
+        '\\bmilf\\b', '\\bgilf\\b', '\\bdilf\\b', '\\bcougar\\b',
+        '\\btwink\\b', '\\byaoi\\b', '\\byuri\\b', '\\bntr\\b',
+        '\\blingerie\\b', '\\bthong\\b', '\\bpanty\\b', '\\bpanties\\b',
+        '\\berotic(a)?\\b', '\\bhardcore\\b', '\\bsoftcore\\b',
+        '\\bxxx\\b', '\\bxnxx\\b', '\\bxhamster\\b', '\\bpornhub\\b',
+        '\\bdeepthroat\\b', '\\banal\\b', '\\bfacial\\b', '\\bcumshot\\b',
+        '\\badult\\s+content\\b', '\\bexplicit\\s+content\\b',
+        '\\bfuck(ing|ed)?\\b', '\\bfuck\\b', '\\bscrew\\b', '\\bpenetrat\\w*\\b',
+        '\\bsmut\\b', '\\blewd\\b', '\\blascivious\\b', '\\bseduct\\w*\\b',
+        # Russian
+        '\\bпорно\\b', '\\bэрот\\w*\\b', '\\bсекс\\b', '\\bгол(ая|ый|ые)\\b', '\\bобнажен\\w*\\b',
+        '\\bгруд\\w*\\b', '\\bсиськ\\w*\\b', '\\bпенис\\b', '\\bвагин\\w*\\b', '\\bминет\\b',
+        '\\bанальн\\w*\\b', '\\bтрах\\w*\\b', '\\bебать\\b', '\\bпизд\\w*\\b', '\\bхуй\\b', '\\bжоп\\w*\\b',
+        '\\bоральн\\w*\\b', '\\bраздев\\w*\\b',
+        # Uzbek
+        "\\byalang['\u2019]?och\\b", '\\byalangoch\\b', '\\bseks\\b', '\\bporno\\b', '\\berotik\\b',
+        "\\bko['\u2019]?krak\\b", '\\bkokrak\\b', '\\bchi?plak\\b', '\\bçıplak\\b',
+        '\\bjinsiy\\b', '\\bsosok\\b', '\\bqov\\b', '\\bminet\\b',
+        # Arabic
+        'عاري', 'إباحي', 'جنس', 'اباحية', 'سكس', 'عري',
+        # Hindi
+        'नग्न', 'अश्लील', 'पोर्न', 'सेक्स', 'योनि', 'लिंग',
+        # Spanish
+        '\\bdesnud[oa]s?\\b', '\\bsex(o|ual)\\b', '\\bnu[da]s?\\b', '\\bpelad[oa]s?\\b', '\\berótico\\b',
+        # Indonesian
+        '\\btelanjang\\b', '\\bbugil\\b', '\\bbokep\\b', '\\bmesum\\b',
+        # Emojis
+        '🍓', '🍑', '💦', '👙', '🥵', '🍆', '🌮', '💋',
+    ]
 ))
+
 
 # Extra NSFW prompt enhancer (only for PREMIUM allowed NSFW). Adds "spicy" background details.
 NSFW_PROMPT_ENHANCER = (
@@ -4927,12 +5051,23 @@ async def premium_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         status_line = t(lang, "premium_active_until", until=_fmt_dt(row["subscription_expire"]))
 
     text = f"{t(lang,'premium_title')}\n\n{t(lang,'premium_desc')}\n\n{status_line}"
+
+    prices = context.application.bot_data.get('premium_prices', {}) if q else {}
+
+    # Build keyboard
+    kb_rows = []
+    # Add video preview button if URL configured
+    if PREMIUM_VIDEO_URL:
+        kb_rows.append([InlineKeyboardButton("🎬 Premium haqida video ko'rish", url=PREMIUM_VIDEO_URL)])
+    # Plan buttons
+    kb_rows += premium_keyboard(lang, prices).inline_keyboard
+
+    rm = InlineKeyboardMarkup(kb_rows)
+
     if q:
-        prices = context.application.bot_data.get('premium_prices', {})
-        await q.edit_message_text(text, reply_markup=premium_keyboard(lang, prices), disable_web_page_preview=True)
+        await q.edit_message_text(text, reply_markup=rm, disable_web_page_preview=True)
     else:
-        prices = context.application.bot_data.get('premium_prices', {})
-        await update.message.reply_text(text, reply_markup=premium_keyboard(lang, prices), disable_web_page_preview=True)
+        await update.message.reply_text(text, reply_markup=rm, disable_web_page_preview=True)
 
 async def premium_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -5243,6 +5378,23 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
                 await conn.execute("UPDATE users SET subscription_type='pro', subscription_expire=$1 WHERE id=$2", new_exp, user.id)
 
         await update.message.reply_text(t(lang, "premium_activated"))
+        # Send premium video if configured (Telegram video URL or file_id)
+        if PREMIUM_VIDEO_URL:
+            try:
+                await context.bot.send_video(
+                    chat_id=update.effective_chat.id,
+                    video=PREMIUM_VIDEO_URL,
+                    caption="🎬 Premium olgandan keyin nima bo'lishini ko'ring!",
+                    supports_streaming=True
+                )
+            except Exception:
+                try:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=f"🎬 Premium haqida video: {PREMIUM_VIDEO_URL}"
+                    )
+                except Exception:
+                    pass
         return
 
     # Donate fallback
@@ -5932,6 +6084,20 @@ async def profile_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         paid_left = int((row["extra_credits"] if row else 0) or 0)
     except Exception:
         paid_left = 0
+
+    if paid_left > 0 and not is_prem:
+        text += "\n" + t(lang, "profile_paid_left", n=paid_left)
+
+    kb = [
+        [InlineKeyboardButton(t(lang, "premium_button"), callback_data="premium_menu"),
+         InlineKeyboardButton(t(lang, "style_button"), callback_data="image_style_menu")],
+        [InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")]
+    ]
+    try:
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    except Exception:
+        await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
 # --- Apply Style addon inside digen_generate_urls by wrapping (keeps legacy) ---
 _digen_generate_urls_original = digen_generate_urls
 
@@ -6710,7 +6876,9 @@ def build_app():
     app.add_handler(CallbackQueryHandler(fake_lab_new_handler, pattern="^fake_lab_new$"))
     app.add_handler(CallbackQueryHandler(fake_lab_refresh_handler, pattern="^fake_lab_refresh$"))
     app.add_handler(CallbackQueryHandler(show_stats_handler, pattern="^show_stats$"))
+    app.add_handler(CallbackQueryHandler(show_stats_handler, pattern="^stats_refresh$"))
     app.add_handler(CommandHandler("stats", cmd_public_stats))
+    app.add_handler(CallbackQueryHandler(start_ai_flow_handler, pattern="^start_ai_flow$"))
     app.add_handler(CallbackQueryHandler(random_anime_handler, pattern="^random_anime$"))
     app.add_handler(CallbackQueryHandler(random_anime_refresh_handler, pattern="^random_anime_refresh$"))
 
