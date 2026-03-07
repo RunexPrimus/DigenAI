@@ -6611,6 +6611,8 @@ except Exception:
 try:
     DEFAULT_NSFW_TRIGGERS.setdefault("en", []).extend([
         r"\bsexy\b", r"\bstrip\b", r"\bmilf\b", r"\bhandjob\b", r"\bdeepthroat\b", r"\borgy\b", r"\bthreesome\b",
+        r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
+        r"\brape\b", r"\bincest\b", r"\bbestiality\b",
         r"\bcock\b", r"\bdick\b", r"\bboob\b", r"\bbreast\b", r"\bbutt\b",
         r"🔞", r"🍓",
     ])
@@ -6772,8 +6774,6 @@ try:
     _SAFETY_BLOCK_PATTERNS = list(set(_ILLEGAL_MINOR_PATTERNS + _ILLEGAL_SEXUAL_VIOLENCE))
 except Exception:
     _SAFETY_BLOCK_PATTERNS = [
-        r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
-        r"\brape\b", r"\bincest\b", r"\bbestiality\b",
     ]
 
 def _contains_safety(prompt: str) -> bool:
@@ -7752,7 +7752,7 @@ def build_app():
 
     # Premium
     app.add_handler(CallbackQueryHandler(premium_menu_handler, pattern="^premium_menu$"))
-    app.add_handler(CallbackQueryHandler(premium_buy_handler, pattern=r"^premium_buy_(24h|7d|30d)$"))
+    app.add_handler(CallbackQueryHandler(premium_buy_handler, pattern=r"^premium_buy_(24h|7d|30d|1y)$"))
 
     # Start / Back
     app.add_handler(CallbackQueryHandler(start_handler, pattern="^back_to_main$"))
@@ -7899,6 +7899,460 @@ async def forward_to_admin_handler(update: Update, context: ContextTypes.DEFAULT
         await context.bot.send_message(chat_id=ADMIN_ID, text=meta)
     except Exception as e:
         logger.warning(f"[SUPPORT RELAY FAILED] {e}")
+
+
+
+# ===================== PREMIUM UI / LANG / NSFW PATCH =====================
+import html as _html
+
+PREMIUM_1Y_PRICE_STARS = int(os.getenv("PREMIUM_1Y_PRICE_STARS", "11500"))
+PREMIUM_PRICE_META_KEYS = {
+    "24h": "premium_price_24h",
+    "7d": "premium_price_7d",
+    "30d": "premium_price_30d",
+    "1y": "premium_price_1y",
+}
+
+
+def _apply_requested_lang_patch() -> None:
+    en = LANGUAGES.setdefault("en", {})
+    uz = LANGUAGES.setdefault("uz", {})
+    ru = LANGUAGES.setdefault("ru", {})
+
+    en.update({
+        "premium_title": "⭐ Premium",
+        "premium_plan_1y": "1 Year",
+        "premium_best_value": "💎 Best value",
+        "premium_most_popular": "🔥 Popular",
+        "premium_try_fast": "⚡ Quick try",
+        "premium_status_active": "✅ Active until: {until}",
+        "premium_status_inactive": "🆓 You are using Free right now.",
+        "premium_intro": "Faster generation, cleaner UI, and priority access.",
+        "premium_benefits_title": "What you unlock:",
+        "premium_benefit_1": "⚡ Priority queue",
+        "premium_benefit_2": "🖼 4 images per request",
+        "premium_benefit_3": "🚫 No cooldown",
+        "premium_benefit_4": "🧼 Free watermark removed",
+        "premium_benefit_5": "🔞 Better adult-keyword detection flow",
+        "premium_savings": "💰 1-year plan saves <b>{save}⭐</b> compared with paying 30-day for 12 months.",
+        "premium_choose": "Choose the plan that fits you:",
+        "premium_invoice_desc": "Unlock priority queue, 4-image batches, no cooldown, and the upgraded Premium UI.",
+        "premium_video_caption": "🎬 Here is a quick look at Premium.",
+        "premium_activated": "✅ Premium activated! Priority queue, 4-image batches, and no cooldown are now enabled.",
+        "premium_menu_footer": "Tap a plan below 👇",
+    })
+    uz.update({
+        "premium_title": "⭐ Premium",
+        "premium_plan_1y": "1 yil",
+        "premium_best_value": "💎 Eng foydali",
+        "premium_most_popular": "🔥 Ommabop",
+        "premium_try_fast": "⚡ Tez sinov",
+        "premium_status_active": "✅ Amal qiladi: {until}",
+        "premium_status_inactive": "🆓 Hozir siz Free rejimdasiz.",
+        "premium_intro": "Tezroq generatsiya, tozaroq UI va prioritet kirish.",
+        "premium_benefits_title": "Premium nimalarni ochadi:",
+        "premium_benefit_1": "⚡ Prioritet navbat",
+        "premium_benefit_2": "🖼 1 so‘rovda 4 ta rasm",
+        "premium_benefit_3": "🚫 Cooldown yo‘q",
+        "premium_benefit_4": "🧼 Free watermark olib tashlanadi",
+        "premium_benefit_5": "🔞 Adult-keyword flow yanada to‘liq ishlaydi",
+        "premium_savings": "💰 1 yillik reja 30 kunlikni 12 marta olishga nisbatan <b>{save}⭐</b> tejaydi.",
+        "premium_choose": "O‘zingizga mos rejani tanlang:",
+        "premium_invoice_desc": "Prioritet navbat, 4 ta rasmli batch, cooldownsiz ishlash va yangilangan Premium UI ni ochadi.",
+        "premium_video_caption": "🎬 Premium imkoniyatlarining qisqa ko‘rinishi.",
+        "premium_activated": "✅ Premium aktiv bo‘ldi! Prioritet navbat, 4 ta rasmli batch va cooldownsiz rejim yoqildi.",
+        "premium_menu_footer": "Quyidan tarifni tanlang 👇",
+    })
+    ru.update({
+        "premium_plan_1y": "1 год",
+        "premium_best_value": "💎 Выгодно",
+        "premium_most_popular": "🔥 Популярно",
+        "premium_try_fast": "⚡ Быстрый тест",
+        "premium_status_active": "✅ Активен до: {until}",
+        "premium_status_inactive": "🆓 Сейчас у вас Free режим.",
+        "premium_invoice_desc": "Открывает приоритет, пакеты по 4 изображения, отсутствие cooldown и обновлённый Premium UI.",
+        "premium_video_caption": "🎬 Краткий обзор Premium.",
+        "premium_menu_footer": "Выберите тариф ниже 👇",
+    })
+
+    fallback_keys = [
+        "premium_plan_1y", "premium_best_value", "premium_most_popular", "premium_try_fast",
+        "premium_status_active", "premium_status_inactive", "premium_intro", "premium_benefits_title",
+        "premium_benefit_1", "premium_benefit_2", "premium_benefit_3", "premium_benefit_4",
+        "premium_benefit_5", "premium_savings", "premium_choose", "premium_invoice_desc",
+        "premium_video_caption", "premium_menu_footer",
+    ]
+    for code, d in LANGUAGES.items():
+        for key in fallback_keys:
+            d.setdefault(key, en.get(key, key))
+
+_apply_requested_lang_patch()
+
+
+def _apply_requested_nsfw_patch() -> None:
+    extra = {
+        "en": [
+            r"\bhentai\b", r"\blewd\b", r"\bsmut\b", r"\bnsfl\b", r"\bonly\s*fans\b",
+            r"\bnipples?\b", r"\bareola\b", r"\bcameltoe\b", r"\bbooty\b", r"\bbdsm\b",
+            r"\bdominatrix\b", r"\bsubmissive\b", r"\boral\b", r"\banal\b", r"\bcumshot\b",
+            r"\bcreampie\b", r"\bface\s*sit\w*\b", r"\b69\b", r"\bthicc\b"
+        ],
+        "uz": [
+            r"\bchi?plak\b", r"\byechin\w*\b", r"\bkokrak\b", r"\bko['’]krak\b", r"\bemchak\b",
+            r"\bsonlar?\b", r"\bdumba\b", r"\bbeldan\s*past\b", r"\bog['’]iz\s*orqali\b",
+            r"\banal\b", r"\bseksual\b", r"\b18\+\b"
+        ],
+        "ru": [
+            r"\bсиськи?\b", r"\bсоски?\b", r"\bанальн\w*\b", r"\bоральн\w*\b", r"\bминет\b",
+            r"\bнюд\b", r"\bхентай\b", r"\bфетиш\b", r"\bэротик\w*\b"
+        ],
+        "esmx": [r"\bdesnudo\b", r"\bdesnuda\b", r"\bpezones?\b", r"\bporno\b", r"\banal\b", r"\boral\b"],
+        "eses": [r"\bdesnudo\b", r"\bdesnuda\b", r"\bpezones?\b", r"\bporno\b", r"\banal\b", r"\boral\b"],
+        "ptbr": [r"\bpelada\b", r"\bpelado\b", r"\bseios\b", r"\bmamilos?\b", r"\banal\b", r"\boral\b"],
+        "ar": [r"اباحي", r"عارية", r"عارية", r"ثدي", r"حلمات", r"شرجي", r"فموي"],
+        "zhcn": [r"乳头", r"胸部", r"成人视频", r"成人视频", r"成人视频", r"成人视频", r"内衣", r"成人视频"],
+        "id": [r"\bmesum\b", r"\bdewasa\b", r"\btetek\b", r"\bputing\b", r"\banal\b", r"\boral\b"],
+        "vi": [r"khiêu\s*dâm", r"ngực", r"núm\s*vú", r"trần\s*truồng", r"anal", r"oral"],
+    }
+    for code, pats in extra.items():
+        bucket = DEFAULT_NSFW_TRIGGERS.setdefault(code, [])
+        for pat in pats:
+            if pat not in bucket:
+                bucket.append(pat)
+
+    global NSFW_GLOBAL_PATTERNS
+    NSFW_GLOBAL_PATTERNS = sorted(set(sum(DEFAULT_NSFW_TRIGGERS.values(), []) + list(NSFW_GLOBAL_PATTERNS)))
+
+    _ILLEGAL_MINOR_PATTERNS[:] = [
+        r"\bminor\b", r"\bunder\s*18\b", r"\bunderage\b", r"\bteen\b", r"\bteenager\b",
+        r"\bchild\b", r"\bkid\b", r"\bbaby\b", r"\binfant\b", r"\bloli\b", r"\bshota\b",
+        r"\bшкол[а-я]*\b", r"\bреб[её]нок\b", r"\bнесовершеннолет\w*\b", r"\bдевочк\w*\b", r"\bмальчик\w*\b",
+        r"\bbola\b", r"\bvoyaga\s*yetmagan\b", r"\bqizaloq\b", r"\bo['’]smir\b",
+        r"\bniñ[oa]s?\b", r"\bmenor(es)?\b", r"\bniño\b", r"\bniña\b",
+        r"\bطفل\b", r"\bقاصر\b", r"未成年", r"儿童", r"小孩", r"孩子"
+    ]
+    _ILLEGAL_SEXUAL_VIOLENCE[:] = [
+        r"\brape\b", r"\bmolest\w*\b", r"\bsexual\s*assault\b", r"\bforced?\s*sex\b",
+        r"\bnon-?consensual\b", r"\bincest\b", r"\bbestiality\b", r"\bzoophili\w*\b",
+        r"\bнасил\w*\b", r"\bизнасил\w*\b", r"\bинцест\b", r"\bзоофил\w*\b",
+        r"\bzo['’]?ravon\w*\b", r"\bmajbur\w*\b", r"\binsest\b", r"\bhayvon\s*bilan\b",
+        r"\bviolaci[oó]n\b", r"\bforzad[oa]\b", r"\bincesto\b",
+        r"اغتصاب", r"زنا\s*محارم", r"強姦", r"乱伦", r"兽交"
+    ]
+
+_apply_requested_nsfw_patch()
+
+
+def _premium_price_tag(lang: dict, plan: str) -> str:
+    mapping = {
+        "24h": t(lang, "premium_try_fast"),
+        "7d": "",
+        "30d": t(lang, "premium_most_popular"),
+        "1y": t(lang, "premium_best_value"),
+    }
+    return mapping.get(plan, "")
+
+
+def _escape_html_text(text: str) -> str:
+    return _html.escape(text or "", quote=False)
+
+
+async def _ensure_premium_price_defaults(pool) -> None:
+    defaults = {
+        PREMIUM_PRICE_META_KEYS["24h"]: PREMIUM_24H_PRICE_STARS,
+        PREMIUM_PRICE_META_KEYS["7d"]: PREMIUM_7D_PRICE_STARS,
+        PREMIUM_PRICE_META_KEYS["30d"]: PREMIUM_30D_PRICE_STARS,
+        PREMIUM_PRICE_META_KEYS["1y"]: PREMIUM_1Y_PRICE_STARS,
+    }
+    async with pool.acquire() as conn:
+        for k, v in defaults.items():
+            await conn.execute(
+                "INSERT INTO meta(key, value) SELECT $1,$2 WHERE NOT EXISTS (SELECT 1 FROM meta WHERE key=$1)",
+                k, str(int(v))
+            )
+
+
+async def _load_premium_prices(pool) -> dict:
+    await _ensure_premium_price_defaults(pool)
+    return {
+        "24h": await _meta_get_int(pool, PREMIUM_PRICE_META_KEYS["24h"], PREMIUM_24H_PRICE_STARS),
+        "7d": await _meta_get_int(pool, PREMIUM_PRICE_META_KEYS["7d"], PREMIUM_7D_PRICE_STARS),
+        "30d": await _meta_get_int(pool, PREMIUM_PRICE_META_KEYS["30d"], PREMIUM_30D_PRICE_STARS),
+        "1y": await _meta_get_int(pool, PREMIUM_PRICE_META_KEYS["1y"], PREMIUM_1Y_PRICE_STARS),
+    }
+
+
+def premium_keyboard(lang: dict, prices: dict, include_back: bool = True) -> InlineKeyboardMarkup:
+    p24 = int(prices.get("24h", PREMIUM_24H_PRICE_STARS))
+    p7 = int(prices.get("7d", PREMIUM_7D_PRICE_STARS))
+    p30 = int(prices.get("30d", PREMIUM_30D_PRICE_STARS))
+    p1y = int(prices.get("1y", PREMIUM_1Y_PRICE_STARS))
+
+    def _label(plan_key: str, amount: int, tag: str = "") -> str:
+        core = f"⭐ {t(lang, plan_key)} • {amount}⭐"
+        return f"{core} {tag}".strip()
+
+    rows = [
+        [
+            InlineKeyboardButton(_label("premium_plan_24h", p24, _premium_price_tag(lang, "24h")), callback_data="premium_buy_24h"),
+            InlineKeyboardButton(_label("premium_plan_7d", p7, _premium_price_tag(lang, "7d")), callback_data="premium_buy_7d"),
+        ],
+        [
+            InlineKeyboardButton(_label("premium_plan_30d", p30, _premium_price_tag(lang, "30d")), callback_data="premium_buy_30d"),
+            InlineKeyboardButton(_label("premium_plan_1y", p1y, _premium_price_tag(lang, "1y")), callback_data="premium_buy_1y"),
+        ],
+    ]
+    if include_back:
+        rows.append([InlineKeyboardButton(t(lang, "back_to_main_button"), callback_data="back_to_main")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def premium_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q:
+        await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    user_id = q.from_user.id if q else update.effective_user.id
+    row = await get_user_row(pool, user_id)
+    lang = get_lang((row["language_code"] if row else DEFAULT_LANGUAGE))
+    is_prem = _is_premium_row(row)
+    prices = context.application.bot_data.get("premium_prices") or await _load_premium_prices(pool)
+    context.application.bot_data["premium_prices"] = prices
+
+    status_line = t(lang, "premium_status_inactive")
+    if is_prem and row and row.get("subscription_expire"):
+        status_line = t(lang, "premium_status_active", until=_fmt_dt(row["subscription_expire"]))
+
+    save_line = ""
+    p30 = int(prices.get("30d", PREMIUM_30D_PRICE_STARS))
+    p1y = int(prices.get("1y", PREMIUM_1Y_PRICE_STARS))
+    yearly_vs_monthly = max((p30 * 12) - p1y, 0)
+    if yearly_vs_monthly > 0:
+        save_line = t(lang, "premium_savings", save=yearly_vs_monthly)
+
+    body_lines = [
+        f"<b>{_escape_html_text(t(lang, 'premium_title'))}</b>",
+        "",
+        f"<i>{_escape_html_text(t(lang, 'premium_intro'))}</i>",
+        "",
+        f"<b>{_escape_html_text(status_line)}</b>",
+        "",
+        f"<b>{_escape_html_text(t(lang, 'premium_benefits_title'))}</b>",
+        _escape_html_text(t(lang, "premium_benefit_1")),
+        _escape_html_text(t(lang, "premium_benefit_2")),
+        _escape_html_text(t(lang, "premium_benefit_3")),
+        _escape_html_text(t(lang, "premium_benefit_4")),
+        _escape_html_text(t(lang, "premium_benefit_5")),
+    ]
+    if save_line:
+        body_lines += ["", save_line]
+    body_lines += ["", _escape_html_text(t(lang, "premium_choose")), _escape_html_text(t(lang, "premium_menu_footer"))]
+    text = "\n".join(body_lines)
+
+    kb_rows = []
+    if PREMIUM_VIDEO_URL:
+        kb_rows.append([InlineKeyboardButton(t(lang, "premium_video_button"), url=PREMIUM_VIDEO_URL)])
+    kb_rows.extend(premium_keyboard(lang, prices).inline_keyboard)
+    rm = InlineKeyboardMarkup(kb_rows)
+
+    if q:
+        await q.edit_message_text(text, parse_mode="HTML", reply_markup=rm, disable_web_page_preview=True)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=rm, disable_web_page_preview=True)
+
+
+async def premium_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    row = await get_user_row(pool, q.from_user.id)
+    lang = get_lang((row["language_code"] if row else DEFAULT_LANGUAGE))
+
+    prices = context.application.bot_data.get("premium_prices") or await _load_premium_prices(pool)
+    context.application.bot_data["premium_prices"] = prices
+    plan = q.data.replace("premium_buy_", "")
+
+    if plan == "24h":
+        stars = int(prices.get("24h", PREMIUM_24H_PRICE_STARS))
+        title = f"⭐ Premium — {t(lang,'premium_plan_24h')}"
+    elif plan == "7d":
+        stars = int(prices.get("7d", PREMIUM_7D_PRICE_STARS))
+        title = f"⭐ Premium — {t(lang,'premium_plan_7d')}"
+    elif plan == "1y":
+        stars = int(prices.get("1y", PREMIUM_1Y_PRICE_STARS))
+        title = f"⭐ Premium — {t(lang,'premium_plan_1y')}"
+    else:
+        stars = int(prices.get("30d", PREMIUM_30D_PRICE_STARS))
+        title = f"⭐ Premium — {t(lang,'premium_plan_30d')}"
+
+    payload = f"sub_{q.from_user.id}_{plan}_{int(time.time())}"
+    prices_line = [LabeledPrice(title, stars)]
+    await context.bot.send_invoice(
+        chat_id=q.message.chat_id,
+        title=title,
+        description=t(lang, "premium_invoice_desc"),
+        payload=payload,
+        provider_token="",
+        currency="XTR",
+        prices=prices_line,
+        is_flexible=False
+    )
+
+
+async def admin_premium_prices_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    q = update.callback_query
+    await q.answer()
+    pool = context.application.bot_data["db_pool"]
+    prices = context.application.bot_data.get("premium_prices") or await _load_premium_prices(pool)
+    context.application.bot_data["premium_prices"] = prices
+
+    text = (
+        "💲 Premium Prices (Stars)\n\n"
+        f"• 24h: {prices.get('24h')}⭐\n"
+        f"• 7d:  {prices.get('7d')}⭐\n"
+        f"• 30d: {prices.get('30d')}⭐\n"
+        f"• 1y:  {prices.get('1y')}⭐\n\n"
+        "Choose what to change:"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Set 24h", callback_data="admin_set_price:24h"), InlineKeyboardButton("✏️ Set 7d", callback_data="admin_set_price:7d")],
+        [InlineKeyboardButton("✏️ Set 30d", callback_data="admin_set_price:30d"), InlineKeyboardButton("✏️ Set 1y", callback_data="admin_set_price:1y")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="admin_settings")]
+    ])
+    await q.edit_message_text(text, reply_markup=kb)
+
+
+async def admin_set_price_prompt_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    q = update.callback_query
+    await q.answer()
+    plan = q.data.split(":", 1)[1].strip()
+    if plan not in ("24h", "7d", "30d", "1y"):
+        return
+    context.user_data["admin_price_plan"] = plan
+    await q.message.reply_text(f"✍️ Send new price for {plan} in Stars (number only):")
+
+
+async def admin_price_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    plan = context.user_data.get("admin_price_plan")
+    if not plan:
+        return
+    try:
+        value = int((update.message.text or "").strip())
+        if value <= 0 or value > 1000000:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text("❌ Please send a valid number (1..1000000).")
+        return
+
+    pool = context.application.bot_data["db_pool"]
+    key = PREMIUM_PRICE_META_KEYS.get(plan)
+    await _meta_set_int(pool, key, value)
+    prices = await _load_premium_prices(pool)
+    context.application.bot_data["premium_prices"] = prices
+    context.user_data.pop("admin_price_plan", None)
+    await update.message.reply_text(f"✅ Updated {plan} price to {value}⭐")
+
+
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    user = update.effective_user
+    pool = context.application.bot_data["db_pool"]
+
+    await add_user_db(pool, user)
+    row = await get_user_row(pool, user.id)
+    lang_code = (row["language_code"] if row else DEFAULT_LANGUAGE)
+    lang = get_lang(lang_code)
+
+    payload = payment.invoice_payload or ""
+    amount_stars = int(payment.total_amount or 0)
+    charge_id = payment.telegram_payment_charge_id
+    provider_charge_id = getattr(payment, "provider_payment_charge_id", None)
+
+    tx_id = uuid.uuid4()
+    kind = "donate"
+    if payload.startswith("quota_"):
+        kind = "quota"
+    elif payload.startswith("sub_"):
+        kind = "subscription"
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO transactions(id, user_id, kind, amount_stars, currency, status, invoice_payload, telegram_payment_charge_id, provider_payment_charge_id) VALUES($1,$2,$3,$4,'XTR','success',$5,$6,$7)",
+            tx_id, user.id, kind, amount_stars, payload, charge_id, provider_charge_id
+        )
+        await conn.execute(
+            "INSERT INTO donations(user_id, username, stars, payload, charge_id) VALUES($1,$2,$3,$4,$5)",
+            user.id, user.username if user.username else None, amount_stars, payload, charge_id
+        )
+
+    if payload.startswith("quota_"):
+        try:
+            parts = payload.split("_")
+            credits = int(parts[2])
+        except Exception:
+            credits = EXTRA_PACK_SIZE
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET extra_credits = COALESCE(extra_credits,0) + $1 WHERE id=$2",
+                credits, user.id
+            )
+        await update.message.reply_text(lang.get("quota_pack_thanks", "✅ Payment accepted! +{credits} credits").format(credits=credits))
+        return
+
+    if payload.startswith("sub_"):
+        plan = "24h"
+        try:
+            parts = payload.split("_")
+            plan = parts[2]
+        except Exception:
+            plan = "24h"
+
+        if plan == "24h":
+            delta = timedelta(hours=24)
+        elif plan == "7d":
+            delta = timedelta(days=7)
+        elif plan == "1y":
+            delta = timedelta(days=365)
+        else:
+            delta = timedelta(days=30)
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                u = await conn.fetchrow("SELECT subscription_expire FROM users WHERE id=$1 FOR UPDATE", user.id)
+                base = _now_utc()
+                if u and u["subscription_expire"] and u["subscription_expire"] > base:
+                    base = u["subscription_expire"]
+                new_exp = base + delta
+                await conn.execute("UPDATE users SET subscription_type='pro', subscription_expire=$1 WHERE id=$2", new_exp, user.id)
+
+        await update.message.reply_text(t(lang, "premium_activated"))
+        if PREMIUM_VIDEO_URL:
+            try:
+                await context.bot.send_video(
+                    chat_id=update.effective_chat.id,
+                    video=PREMIUM_VIDEO_URL,
+                    caption=t(lang, "premium_video_caption"),
+                    supports_streaming=True
+                )
+            except Exception:
+                try:
+                    await context.bot.send_message(chat_id=update.effective_chat.id, text=PREMIUM_VIDEO_URL)
+                except Exception:
+                    pass
+        return
+
+    if "donate_thanks" in lang:
+        await update.message.reply_text(lang["donate_thanks"].format(name=(user.first_name or "friend"), stars=amount_stars))
+    else:
+        await update.message.reply_text(f"✅ Thanks! {amount_stars} Stars received.")
+
+# ===================== END PATCH =====================
 
 if __name__ == "__main__":
     main()
