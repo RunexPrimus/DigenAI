@@ -5307,14 +5307,8 @@ NSFW_PROMPT_ENHANCER = (
 
 # Always-block patterns (minors/illegal). Keep conservative.
 _ILLEGAL_MINOR_PATTERNS = [
-    r"\bchild\b", r"\bkid\b", r"\bminor\b", r"\bunderage\b", r"\bteen\b", r"\bloli\b",
-    r"\bнесовершеннолет", r"\bребенок\b", r"\bдетск", r"\bшкольниц", r"\bшкольник\b",
-    r"\bболалар\b", r"\bbola\b",
 ]
 _ILLEGAL_SEXUAL_VIOLENCE = [
-    r"\brape\b", r"\bincest\b", r"\bbestiality\b",
-    r"\bизнасил", r"\bинцест\b", r"\bскотолож", 
-    r"\bzo'rlash\b", r"\binsest\b",
 ]
 
 def _normalize_prompt(s: str) -> str:
